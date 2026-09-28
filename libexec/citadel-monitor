@@ -27,6 +27,7 @@ import re
 import select
 import socket
 import sqlite3
+import shutil
 import subprocess
 import sys
 import threading
@@ -210,22 +211,65 @@ trust_cache = {}
 owner_cache = {}
 
 
+# Package databases. The integrity check compares a program against the
+# checksum its package recorded: pacman (sha256 in the mtree), dpkg (md5 in
+# info/*.md5sums) or rpm (the package's file digests). Detected once.
+PKG_ROOT = os.environ.get("CITADEL_PKGDB_ROOT", "")      # tests: a fake / for the databases
+
+
+def pkg_backend():
+    if os.path.isdir(PKG_ROOT + "/var/lib/pacman/local") and shutil.which("pacman"):
+        return "pacman"
+    if os.path.isdir(PKG_ROOT + "/var/lib/dpkg/info") and shutil.which("dpkg-query"):
+        return "dpkg"
+    if shutil.which("rpm") and (os.path.isdir("/var/lib/rpm") or os.path.isdir("/usr/lib/sysimage/rpm")):
+        return "rpm"
+    return ""
+
+
+PKG_BACKEND = pkg_backend()
+
+
+def _alt_paths(path):
+    """Merged /usr: dpkg and rpm may list /bin/x for /usr/bin/x (and back)."""
+    out = [path]
+    for a, b in (("/usr/bin/", "/bin/"), ("/usr/sbin/", "/sbin/"), ("/usr/lib/", "/lib/"), ("/usr/lib64/", "/lib64/")):
+        if path.startswith(a):
+            out.append(b + path[len(a):])
+        elif path.startswith(b):
+            out.append(a + path[len(b):])
+    return out
+
+
 def pkg_owner(path):
     if path in owner_cache:
         return owner_cache[path]
-    try:
-        p = subprocess.run(["pacman", "-Qqo", path], stdout=subprocess.PIPE,
-                           stderr=subprocess.DEVNULL, text=True, timeout=10)
-        name = p.stdout.strip().splitlines()[0] if p.returncode == 0 and p.stdout.strip() else ""
-    except (OSError, subprocess.TimeoutExpired, IndexError):
-        name = ""
+    name = ""
+    for cand in _alt_paths(path):
+        try:
+            if PKG_BACKEND == "pacman":
+                p = subprocess.run(["pacman", "-Qqo", cand], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=10)
+                name = p.stdout.strip().splitlines()[0] if p.returncode == 0 and p.stdout.strip() else ""
+            elif PKG_BACKEND == "dpkg":
+                p = subprocess.run(["dpkg-query", "-S", cand], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=10)
+                line = p.stdout.strip().splitlines()[0] if p.returncode == 0 and p.stdout.strip() else ""
+                # "pkg: /path" or "pkg:arch: /path"; "diversion by ..." lines are skipped
+                name = line.rsplit(": ", 1)[0].split(",")[0].strip() if line and not line.startswith("diversion") else ""
+            elif PKG_BACKEND == "rpm":
+                p = subprocess.run(["rpm", "-qf", "--qf", "%{NAME}\n", cand], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                   text=True, timeout=10)
+                name = p.stdout.strip().splitlines()[0] if p.returncode == 0 and p.stdout.strip() else ""
+        except (OSError, subprocess.TimeoutExpired, IndexError):
+            name = ""
+        if name:
+            break
     owner_cache[path] = name
     return name
 
 
-def mtree_digest(pkg, path):
-    """sha256 recorded by pacman for this file, from the local db mtree."""
-    base = "/var/lib/pacman/local"
+def mtree_digest(pkg, path, base=None):
+    """("sha256", hex) recorded by pacman for this file, from the local db mtree."""
+    base = base or PKG_ROOT + "/var/lib/pacman/local"
     try:
         dirs = [d for d in os.listdir(base) if d.startswith(pkg + "-")]
     except OSError:
@@ -240,10 +284,78 @@ def mtree_digest(pkg, path):
                 for line in f:
                     if line.startswith(want + " "):
                         m = re.search(r"sha256digest=([0-9a-f]{64})", line)
-                        return m.group(1) if m else None
+                        return ("sha256", m.group(1)) if m else None
         except OSError:
             return None
     return None
+
+
+def dpkg_digest(pkg, path, base=None):
+    """("md5", hex) from dpkg's md5sums for this file (any listed path alias)."""
+    base = base or PKG_ROOT + "/var/lib/dpkg/info"
+    wants = {p.lstrip("/") for p in _alt_paths(path)}
+    names = [pkg] if ":" in pkg else [pkg]
+    try:
+        names += [f[:-len(".md5sums")] for f in os.listdir(base) if f.startswith(pkg + ":") and f.endswith(".md5sums")]
+    except OSError:
+        return None
+    for n in names:
+        try:
+            with open(os.path.join(base, n + ".md5sums"), errors="replace") as f:
+                for line in f:
+                    parts = line.rstrip("\n").split(None, 1)
+                    if len(parts) == 2 and parts[1] in wants and re.fullmatch(r"[0-9a-f]{32}", parts[0]):
+                        return ("md5", parts[0])
+        except OSError:
+            continue
+    return None
+
+
+RPM_ALGOS = {1: "md5", 2: "sha1", 8: "sha256", 9: "sha384", 10: "sha512", 11: "sha224"}
+
+
+def rpm_digest(pkg, path):
+    """(algo, hex) from the rpm database's file digests for this file."""
+    try:
+        p = subprocess.run(["rpm", "-q", "--qf", "%{FILEDIGESTALGO}\n[%{FILENAMES}\t%{FILEDIGESTS}\n]", pkg],
+                           stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=15)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return parse_rpm_digests(p.stdout if p.returncode == 0 else "", path)
+
+
+def parse_rpm_digests(text, path):
+    lines = text.splitlines()
+    if not lines:
+        return None
+    try:
+        algo = RPM_ALGOS.get(int(lines[0].strip() or "1"), "")
+    except ValueError:
+        algo = "md5"                       # (none) on old rpms: md5
+    wants = set(_alt_paths(path))
+    for line in lines[1:]:
+        name, _, digest = line.partition("\t")
+        if name in wants and digest:
+            return (algo, digest.strip()) if algo else None
+    return None
+
+
+def package_digest(pkg, path):
+    if PKG_BACKEND == "pacman":
+        return mtree_digest(pkg, path)
+    if PKG_BACKEND == "dpkg":
+        return dpkg_digest(pkg, path)
+    if PKG_BACKEND == "rpm":
+        return rpm_digest(pkg, path)
+    return None
+
+
+def file_digest(path, algo):
+    h = hashlib.new(algo)
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
 
 def sha256(path):
@@ -274,17 +386,24 @@ def trust(exe, deleted=False):
             digest = sha256(exe)
         except OSError:
             digest = ""
-        pkg = pkg_owner(exe)
+        real = os.path.realpath(exe)
+        pkg = pkg_owner(real) or (pkg_owner(exe) if real != exe else "")
         if pkg:
-            want = mtree_digest(pkg, os.path.realpath(exe))
-            if want and digest == want:
+            want = package_digest(pkg, real)
+            try:
+                got = digest if want and want[0] == "sha256" else (file_digest(real, want[0]) if want else "")
+            except (OSError, ValueError):
+                got = ""
+            if want and got == want[1]:
                 t = {"level": "verified", "pkg": pkg}
             elif want:
                 t = {"level": "modified", "pkg": pkg, "reason": "differs from package"}
             else:
                 t = {"level": "verified", "pkg": pkg, "reason": "no checksum in package"}
+        elif PKG_BACKEND:
+            t = {"level": "unpackaged", "reason": "not from a system package"}
         else:
-            t = {"level": "unpackaged", "reason": "not from a pacman package"}
+            t = {"level": "unknown", "reason": "no package database this Citadel knows"}
         t["hash"] = digest
     trust_cache[key] = t
     return t
