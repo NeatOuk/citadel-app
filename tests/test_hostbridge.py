@@ -149,9 +149,14 @@ class HostBridgeTest(unittest.IsolatedAsyncioTestCase):
         r = await self.c.call("importFeed", "Imported (2)", ["ads.example.com", "tracker.example"], "")
         self.assertTrue(r["ok"])
         await self.c.call("setMode", "guarded", 0)            # a sync
-        self.assertTrue(await self.wait(lambda: self.host.of("feeds"), 8))
-        feeds = self.host.of("feeds")[-1]["args"]["feeds"]
-        mine = [f for f in feeds if f["id"] == r["result"]]
+        def mine():
+            for req in reversed(self.host.of("feeds")):
+                hit = [f for f in req["args"]["feeds"] if f["id"] == r["result"]]
+                if hit:
+                    return hit
+            return []
+        self.assertTrue(await self.wait(lambda: mine(), 8), "a feeds call with the imported list")
+        mine = mine()
         self.assertEqual(mine[0]["entries"], ["ads.example.com", "tracker.example"])
         n = len(self.host.of("feeds"))
         await self.c.call("setMode", "guarded", 0)
