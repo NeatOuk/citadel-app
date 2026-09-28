@@ -8,7 +8,11 @@ import SystemExtensions
 
 @main
 struct CitadelHostApp: App {
-    @StateObject private var ext = ExtensionController()
+    @StateObject private var ext = ExtensionController.shared
+
+    init() {
+        HostBridge.shared.start()               // citadel-daemon connects here
+    }
 
     var body: some Scene {
         WindowGroup("Citadel") {
@@ -27,7 +31,8 @@ struct CitadelHostApp: App {
 }
 
 final class ExtensionController: NSObject, ObservableObject, OSSystemExtensionRequestDelegate {
-    static let extensionID = "io.github.neatouk.Citadel.Filter"
+    static let shared = ExtensionController()
+    static let extensionID = CitadelIDs.filterBundle
     @Published var status = "Not installed"
 
     func activate() {

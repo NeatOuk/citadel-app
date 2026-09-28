@@ -1,17 +1,24 @@
 // Decides every new outbound connection with CitadelCore, the same logic as
-// Citadel on Linux. Phase 2 skeleton: policies come from a JSON file the
-// host writes; the gate (pausing a flow until the user answers) and the
-// link to citadel-daemon are the next steps.
+// Citadel on Linux. Policies come from citadel-daemon through the host app.
+// A connection no policy covers is paused and waits at the gate: the host
+// tells the daemon, and the answer resumes it (allowed or dropped). With no
+// host, or when nobody answers in time, the gate's default applies.
 import CitadelCore
 import Foundation
 import NetworkExtension
 import os.log
 
 final class FilterDataProvider: NEFilterDataProvider {
-    private let log = Logger(subsystem: "io.github.neatouk.Citadel.Filter", category: "filter")
-    private let store = PolicyStore.shared
+    static weak var current: FilterDataProvider?
+    let log = Logger(subsystem: CitadelIDs.filterBundle, category: "filter")
+    let store = PolicyStore()
+    let gate = GateBook<NEFilterFlow>()
+    private var timer: DispatchSourceTimer?
+    private(set) var drops = 0
 
     override func startFilter(completionHandler: @escaping (Error?) -> Void) {
+        FilterDataProvider.current = self
+        FilterService.shared.start()
         // every outbound TCP/UDP flow comes to handleNewFlow; the rest passes
         let outbound = NENetworkRule(remoteNetwork: nil, remotePrefix: 0, localNetwork: nil, localPrefix: 0,
                                      protocol: .any, direction: .outbound)
@@ -21,13 +28,21 @@ final class FilterDataProvider: NEFilterDataProvider {
             if let error { self.log.error("filter settings failed: \(error.localizedDescription, privacy: .public)") }
             completionHandler(error)
         }
+        let t = DispatchSource.makeTimerSource(queue: .global())
+        t.schedule(deadline: .now() + 1, repeating: 1)
+        t.setEventHandler { [weak self] in self?.expireGate() }
+        t.resume()
+        timer = t
     }
 
     override func stopFilter(with reason: NEProviderStopReason, completionHandler: @escaping () -> Void) {
+        timer?.cancel()
+        releaseAll()
         completionHandler()
     }
 
     override func handleNewFlow(_ flow: NEFilterFlow) -> NEFilterNewFlowVerdict {
+        guard let spec = store.current() else { return .allow() }          // nothing applied yet: not filtering
         guard let socket = flow as? NEFilterSocketFlow,
               let remote = socket.remoteEndpoint as? NWHostEndpoint else { return .allow() }
         var conn = Conn()
@@ -37,17 +52,43 @@ final class FilterDataProvider: NEFilterDataProvider {
         let app = AppIdentity(token: flow.sourceAppAuditToken)
         conn.exe = app.path
         conn.app = (app.path as NSString).lastPathComponent
-        let snapshot = store.snapshot()
-        let d = decide(conn, snapshot.rules, snapshot.context)
+        let d = decide(conn, spec.rules, spec.context)
         switch d.verdict {
         case "deny":
+            drops += 1
             log.info("blocked \(conn.app, privacy: .public) -> \(conn.raddr, privacy: .public):\(conn.rport)")
             return .drop()
         case "prompt":
-            // next step: pause the flow and ask the gate (citadel-daemon)
-            return .allow()
+            let id = flow.identifier.uuidString
+            guard FilterService.shared.flowPaused(id: id, conn: conn, pid: app.pid, proto: socket.socketProtocol) else {
+                return spec.gateAllows ? .allow() : .drop()                    // no one to ask
+            }
+            gate.add(id, flow, timeout: spec.gateTimeout + 5)                  // the daemon answers first
+            return .pause()
         default:
             return .allow()
+        }
+    }
+
+    func resolve(_ ids: [String], allow: Bool) {
+        for flow in gate.take(ids) {
+            if !allow { drops += 1 }
+            resumeFlow(flow, with: allow ? NEFilterNewFlowVerdict.allow() : NEFilterNewFlowVerdict.drop())
+        }
+    }
+
+    private func expireGate() {
+        let allows = store.current()?.gateAllows ?? true
+        for flow in gate.expired() {
+            resumeFlow(flow, with: allows ? NEFilterNewFlowVerdict.allow() : NEFilterNewFlowVerdict.drop())
+        }
+    }
+
+    /// Let everything that waits go (filtering switched off, or the host left).
+    func releaseAll() {
+        let allows = store.current()?.gateAllows ?? true
+        for flow in gate.drain() {
+            resumeFlow(flow, with: allows ? NEFilterNewFlowVerdict.allow() : NEFilterNewFlowVerdict.drop())
         }
     }
 }
@@ -70,27 +111,79 @@ struct AppIdentity {
     }
 }
 
-/// The current policies and context. The host app (later: citadel-daemon via
-/// the host) writes them as JSON; the filter reads them on change.
+/// The spec the daemon applied, or nil when filtering is off.
 final class PolicyStore {
-    static let shared = PolicyStore()
-    struct Snapshot {
-        var rules: [Rule] = []
-        var context = Context()
-    }
     private let lock = NSLock()
-    private var current = Snapshot()
+    private var spec: Spec?
 
-    func snapshot() -> Snapshot {
-        lock.lock(); defer { lock.unlock() }
-        return current
+    func current() -> Spec? { lock.lock(); defer { lock.unlock() }; return spec }
+    func set(_ s: Spec?) { lock.lock(); spec = s; lock.unlock() }
+}
+
+/// The extension's XPC service for the host app.
+final class FilterService: NSObject, NSXPCListenerDelegate, FilterXPC {
+    static let shared = FilterService()
+    private var listener: NSXPCListener?
+    private var host: NSXPCConnection?
+    private let lock = NSLock()
+
+    func start() {
+        guard listener == nil, let name = filterMachServiceName(bundle: .main) else { return }
+        let l = NSXPCListener(machServiceName: name)
+        l.delegate = self
+        l.resume()
+        listener = l
     }
 
-    func update(fromJSON data: Data) {
-        guard let j = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
-        var s = Snapshot()
-        s.rules = (j["rules"] as? [[String: Any]] ?? []).map(Rule.init(json:))
-        s.context = Context(json: j["ctx"] as? [String: Any] ?? [:])
-        lock.lock(); current = s; lock.unlock()
+    func listener(_ listener: NSXPCListener, shouldAcceptNewConnection c: NSXPCConnection) -> Bool {
+        requireSameTeam(c)
+        c.exportedInterface = NSXPCInterface(with: FilterXPC.self)
+        c.exportedObject = self
+        c.remoteObjectInterface = NSXPCInterface(with: HostXPC.self)
+        c.invalidationHandler = { [weak self, weak c] in
+            self?.lock.lock()
+            if self?.host === c { self?.host = nil }
+            self?.lock.unlock()
+        }
+        lock.lock(); host = c; lock.unlock()
+        c.resume()
+        return true
+    }
+
+    /// Tell the host a flow waits at the gate. False when no host is connected.
+    func flowPaused(id: String, conn: Conn, pid: pid_t, proto: Int32) -> Bool {
+        lock.lock(); let h = host; lock.unlock()
+        guard let proxy = h?.remoteObjectProxyWithErrorHandler({ _ in }) as? HostXPC else { return false }
+        let info: [String: Any] = ["type": "flow", "id": id, "exe": conn.exe, "raddr": conn.raddr, "rport": conn.rport,
+                                   "host": conn.host, "proto": proto == IPPROTO_UDP ? "udp" : "tcp", "pid": Int(pid)]
+        guard let data = try? JSONSerialization.data(withJSONObject: info) else { return false }
+        proxy.flowPaused(data)
+        return true
+    }
+
+    // MARK: FilterXPC
+    func apply(_ spec: Data, withReply reply: @escaping (Bool, String) -> Void) {
+        guard let s = Spec(json: spec) else { reply(false, "not a citadel-macos-1 spec"); return }
+        FilterDataProvider.current?.store.set(s)
+        reply(true, "")
+    }
+
+    func status(withReply reply: @escaping (Data) -> Void) {
+        let p = FilterDataProvider.current
+        let spec = p?.store.current()
+        let info: [String: Any] = ["active": spec != nil, "drops": p?.drops ?? 0, "rules": spec?.rules.count ?? 0,
+                                   "logging": false, "proxy": false, "pending": p?.gate.count ?? 0,
+                                   "version": CitadelIDs.helperProtocol, "impl": "macos-filter " + CitadelIDs.version]
+        reply((try? JSONSerialization.data(withJSONObject: info)) ?? Data())
+    }
+
+    func resolve(_ flowIDs: [String], allow: Bool) {
+        FilterDataProvider.current?.resolve(flowIDs, allow: allow)
+    }
+
+    func off(withReply reply: @escaping (Bool) -> Void) {
+        FilterDataProvider.current?.store.set(nil)
+        FilterDataProvider.current?.releaseAll()
+        reply(true)
     }
 }

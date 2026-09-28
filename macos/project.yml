@@ -22,7 +22,7 @@ targets:
   CitadelHost:
     type: application
     platform: macOS
-    sources: [CitadelHost]
+    sources: [CitadelHost, Shared]
     dependencies:
       - package: CitadelCore
       - target: CitadelFilter
@@ -37,7 +37,7 @@ targets:
   CitadelFilter:
     type: system-extension
     platform: macOS
-    sources: [CitadelFilter]
+    sources: [CitadelFilter, Shared]
     dependencies:
       - package: CitadelCore
       - sdk: NetworkExtension.framework
