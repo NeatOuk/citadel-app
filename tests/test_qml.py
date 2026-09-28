@@ -112,7 +112,11 @@ class QmlLoads(unittest.TestCase):
         problems = []
 
         def handler(mode, ctx, msg):
-            if mode in (QtMsgType.QtWarningMsg, QtMsgType.QtCriticalMsg, QtMsgType.QtFatalMsg) and "portal" not in msg:
+            # "portal": no desktop file in tests; "font family aliases": Qt's
+            # offscreen platform on macOS asks for a "Sans Serif" font Macs
+            # don't have (a one-off lookup cost, not a QML problem)
+            benign = "portal" in msg or "Populating font family aliases" in msg
+            if mode in (QtMsgType.QtWarningMsg, QtMsgType.QtCriticalMsg, QtMsgType.QtFatalMsg) and not benign:
                 problems.append(msg)
         qInstallMessageHandler(handler)
         QQuickStyle.setStyle("Fusion")
