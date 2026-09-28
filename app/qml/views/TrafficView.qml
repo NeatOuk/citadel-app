@@ -32,6 +32,7 @@ Column {
     if (d.verdict === "prompt") return d.source === "changed" ? "changed app, at the gate" : "no verdict yet"
     var v = d.verdict === "deny" ? "blocked" : "allowed"
     if (d.source === "rule") return v + " by policy"
+    if (d.source === "citadel") return "Citadel's proxy (already decided)"
     if (d.source === "blocklist") return "blocked by feed " + (d.list || "")
     if (d.source === "once") return v + " once"
     if (d.source === "silent") return v + (d.verdict === "deny" ? " (lockdown)" : " (open mode)")

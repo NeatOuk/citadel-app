@@ -231,6 +231,17 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         kills = [c for c in self.helper_calls() if c["args"][0] == "kill"]
         self.assertTrue(kills and {"cgroup": SLICE + "app-x.scope", "ip": "6.6.6.6"} in kills[-1]["file"])
 
+    async def test_citadel_proxy_tunnels_never_wait_at_the_gate(self):
+        self.d.prefs["notify"] = False
+        self.feed(tick([]))
+        self.assertTrue(await self.c.wait_for(lambda s: s.get("ticks", 0) >= 1))
+        own = conn("k9", "/usr/bin/python3.14", "192.168.1.20", 3128, app="Citadel proxy",
+                   cmd="python3 /usr/lib/citadel/libexec/citadel-proxy")
+        self.feed(tick([own], ts=1004))
+        self.assertTrue(await self.c.wait_for(lambda s: "k9" in s.get("decisions", {})))
+        self.assertEqual(self.c.state["decisions"]["k9"]["source"], "citadel")
+        self.assertEqual(self.c.state["alerts"], [])
+
     async def test_unknown_command_is_refused(self):
         r = await self.c.call("_write_state")
         self.assertFalse(r["ok"])

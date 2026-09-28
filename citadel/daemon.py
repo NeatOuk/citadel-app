@@ -340,6 +340,10 @@ class Daemon:
         new_alerts = list(self.alerts)
         logged = []
         for c in self.conns:
+            if self._is_own(c):
+                # Citadel's proxy tunnels carry traffic that was already decided
+                dec[c["key"]] = {"verdict": "allow", "source": "citadel", "rule": None}
+                continue
             d = M.decide(c, self.rules, ctx)
             if d["source"] == "rule" and d["verdict"] == "allow" and d["rule"].get("exeHash") and c.get("exe") and self.apps.get(c["exe"]):
                 h = (self.apps[c["exe"]].get("trust") or {}).get("hash")
@@ -363,6 +367,8 @@ class Daemon:
         if shorts:
             recent = []
             for sc in shorts:
+                if self._is_own(sc):
+                    continue
                 sd = M.decide(sc, self.rules, ctx)
                 recent.append({"conn": sc, "decision": sd})
                 if first:
@@ -396,6 +402,10 @@ class Daemon:
                      "decisions", "groups", "rate", "totals", "recentShort", "alerts", "activeProfile")
         if self.enforce:
             self._sync_enforcement(first)
+
+    def _is_own(self, c):
+        """A connection of Citadel's own proxy process (its upstream tunnels)."""
+        return c.get("app") == "Citadel proxy" or bool(re.search(r"/citadel-proxy(\s|$)", c.get("cmd") or ""))
 
     def _silent_source(self, c, d):
         if d["source"] == "blocklist":
@@ -583,14 +593,15 @@ class Daemon:
         ctx = self._ctx()
         dec, denied = {}, 0
         for c in self.conns:
-            d = M.decide(c, self.rules, ctx)
+            d = {"verdict": "allow", "source": "citadel", "rule": None} if self._is_own(c) else M.decide(c, self.rules, ctx)
             dec[c["key"]] = d
             if d["verdict"] == "deny":
                 denied += 1
         self.decisions = dec
         self.groups = M.group_by_app(self.conns, dec)
         self.totals = {"connections": len(self.conns), "apps": len(self.groups), "denied": denied}
-        still = [a for a in self.alerts if M.decide(a["conn"], self.rules, ctx)["verdict"] == "prompt" or a.get("changed")]
+        still = [a for a in self.alerts if not self._is_own(a["conn"])
+                 and (M.decide(a["conn"], self.rules, ctx)["verdict"] == "prompt" or a.get("changed"))]
         for a in self.alerts:
             if a not in still:
                 self._close_notification(a["key"])
