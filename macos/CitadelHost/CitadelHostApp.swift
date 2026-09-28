@@ -3,6 +3,7 @@
 // citadel-daemon (policies in, gate questions out) and posts notifications
 // with Allow / Block buttons.
 import NetworkExtension
+import ServiceManagement
 import SwiftUI
 import SystemExtensions
 
@@ -12,6 +13,7 @@ struct CitadelHostApp: App {
 
     init() {
         HostBridge.shared.start()               // citadel-daemon connects here
+        GateNotifications.shared.start()        // gate requests with Allow / Block buttons
     }
 
     var body: some Scene {
@@ -23,6 +25,7 @@ struct CitadelHostApp: App {
                     Button("Install and enable") { ext.activate() }
                     Button("Disable") { ext.setFilter(enabled: false) }
                 }
+                Toggle("Start Citadel at login", isOn: Binding(get: { ext.startsAtLogin }, set: { ext.setStartsAtLogin($0) }))
             }
             .padding(24)
             .frame(minWidth: 420)
@@ -34,6 +37,17 @@ final class ExtensionController: NSObject, ObservableObject, OSSystemExtensionRe
     static let shared = ExtensionController()
     static let extensionID = CitadelIDs.filterBundle
     @Published var status = "Not installed"
+    @Published var startsAtLogin = SMAppService.mainApp.status == .enabled
+
+    /// The host must run for the gate and the filter's link to citadel-daemon.
+    func setStartsAtLogin(_ on: Bool) {
+        do {
+            if on { try SMAppService.mainApp.register() } else { try SMAppService.mainApp.unregister() }
+        } catch {
+            report("Could not change the login item: \(error.localizedDescription)")
+        }
+        startsAtLogin = SMAppService.mainApp.status == .enabled
+    }
 
     func activate() {
         status = "Asking macOS to install the extension…"

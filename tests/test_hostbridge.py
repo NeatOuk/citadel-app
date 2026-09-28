@@ -163,6 +163,21 @@ class HostBridgeTest(unittest.IsolatedAsyncioTestCase):
         await asyncio.sleep(1.5)
         self.assertEqual(len(self.host.of("feeds")), n, "unchanged feeds are not sent again")
 
+    async def test_notifications_go_through_the_host_and_its_buttons_answer(self):
+        self.d.prefs["notify"] = True
+        self.host.pause("F7", "/usr/bin/curl", "93.184.216.34", host="example.com")
+        self.assertTrue(await self.wait(lambda: self.host.of("notify")))
+        note = self.host.of("notify")[0]["args"]
+        self.assertIn("curl", note["body"])
+        for w in self.host.subscribers:                # the user presses "Block"
+            w.write((json.dumps({"type": "answer", "key": note["key"], "choice": "block"}) + "\n").encode())
+        self.assertTrue(await self.wait(lambda: self.host.of("resolve")))
+        self.assertEqual(self.host.of("resolve")[0]["args"], {"flows": ["F7"], "allow": False})
+        self.assertTrue(await self.c.wait_for(lambda s: any(r["host"] == "example.com" and r["action"] == "deny"
+                                                            for r in s.get("rules", []))))
+        self.assertTrue(await self.wait(lambda: any(r["args"].get("remove") for r in self.host.of("notify"))),
+                        "the answered request's notification is removed")
+
     async def test_off_goes_to_the_host(self):
         await self.c.call("setEnforce", False)
         self.assertTrue(await self.wait(lambda: self.host.of("off")))

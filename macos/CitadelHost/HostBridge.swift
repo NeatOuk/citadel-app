@@ -83,6 +83,17 @@ final class HostBridge: NSObject, HostXPC {
         let id = msg["id"] ?? 0
         let args = msg["args"] as? [String: Any] ?? [:]
         func done(_ code: Int, _ out: String = "", _ err: String = "") { reply(["id": id, "code": code, "out": out, "err": err]) }
+        if msg["cmd"] as? String == "notify" {                 // no extension needed for this one
+            let key = args["key"] as? String ?? ""
+            if (args["remove"] as? Bool) == true {
+                GateNotifications.shared.remove(key: key)
+            } else {
+                GateNotifications.shared.post(key: key, title: args["title"] as? String ?? "At the gate",
+                                              body: args["body"] as? String ?? "")
+            }
+            done(0)
+            return
+        }
         guard let f = filterProxy(onError: { done(1, "", "Citadel's network extension is not reachable: \($0.localizedDescription)") })
         else { done(1, "", "Citadel's network extension is not installed or not enabled"); return }
         switch msg["cmd"] as? String {
@@ -139,11 +150,14 @@ final class HostBridge: NSObject, HostXPC {
     // MARK: HostXPC (called by the extension)
 
     func flowPaused(_ info: Data) {
+        // with no daemon listening, the extension's own deadline applies the default
         lock.lock(); let subs = subscribers; lock.unlock()
-        if subs.isEmpty {
-            // no daemon listening: the extension's own deadline applies the default
-            return
-        }
         for s in subs { s.write(info + Data([0x0A])) }
+    }
+
+    /// An event for citadel-daemon (e.g. a notification button's answer).
+    func sendEvent(_ event: [String: Any]) {
+        guard let data = try? JSONSerialization.data(withJSONObject: event) else { return }
+        flowPaused(data)
     }
 }

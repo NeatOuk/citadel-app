@@ -495,6 +495,10 @@ class Daemon:
         c = alert["conn"]
         title = "Changed app at the gate" if alert.get("changed") else "At the gate"
         body = "%s → %s:%s" % (_app_with_origin(c), c.get("host") or c.get("raddr") or "?", c.get("rport"))
+        if self.bridge and self.helperInstalled:
+            # macOS: the host app posts it with buttons (UNUserNotificationCenter)
+            self._run(["notify", json.dumps({"key": alert["key"], "title": title, "body": body})])
+            return
         actions = [("once", "Allow once"), ("always", "Always allow"), ("block", "Block"), ("default", "Open Citadel")]
         proc = await P.notify(title, body, actions)
         if not proc:
@@ -517,6 +521,8 @@ class Daemon:
                 P.launch_app(["--gate"])
 
     def _close_notification(self, key):
+        if self.bridge and self.helperInstalled:
+            self._run(["notify", json.dumps({"key": key, "remove": True})])
         proc = self._notifications.pop(key, None)
         if proc and proc.returncode is None:
             try:
@@ -904,7 +910,21 @@ class Daemon:
 
     # ------------------------------------------------------------ the gate on macOS (paused flows)
     def _on_host_event(self, ev):
-        """A new connection the network extension paused until the gate answers."""
+        """A new connection the network extension paused until the gate answers,
+        or a button pressed on one of the host's notifications."""
+        if ev.get("type") == "answer" and not self.pluginActive:
+            key, choice = str(ev.get("key") or ""), ev.get("choice")
+            if choice == "once":
+                self.answer(key, "allow", "hostPort", "once", "you · once (notification)")
+            elif choice == "always":
+                self.answer(key, "allow", "host", "forever", "you · from now on (notification)")
+            elif choice == "block":
+                self.answer(key, "deny", "host", "forever", "you · blocked (notification)")
+            elif choice == "open":
+                self.emit({"type": "open", "view": "gate"})
+                if not self._listeners:
+                    P.launch_app(["--gate"])
+            return
         if ev.get("type") != "flow" or not ev.get("id") or self.pluginActive:
             return
         import ipaddress
