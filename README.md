@@ -38,7 +38,11 @@ Optional:
 | `python-maxminddb` | countries and network owners |
 | `libsecret` | proxy usernames and passwords in the keyring |
 | `networkmanager` or `iwd` | zones by Wi-Fi name (wired links work either way) |
-| an AI CLI (claude, codex, gemini, pi, …) | Explain at the gate |
+| an AI CLI: claude, codex, gemini, pi, opencode, crush, copilot or cursor-agent (or any command you set) | Explain at the gate |
+
+Also needed, and present on every mainstream distro: systemd, cgroup v2, and
+a notification server (GNOME, KDE, mako, dunst, swaync… any freedesktop one).
+Integrity checks use the system's package database: pacman, dpkg or rpm.
 
 The packages below pull in the required dependencies themselves.
 
@@ -77,28 +81,15 @@ says so. To switch to the app, `omarchy plugin disable neat.citadel`; the
 service takes over within seconds, with the same policies. To switch back,
 enable the plugin again and the service steps aside.
 
-## Requirements
-
-| Need | Package |
-|---|---|
-| Python 3.11+ and PySide6 (Qt 6 Quick) | `pyside6` / `python3-pyside6.*` |
-| Connection list | `iproute2` |
-| Notifications with buttons | `libnotify` (`notify-send`) and any notification server |
-| Enforcement, proxy routing | `citadel-helper` → `nftables`, `polkit`; cgroup v2 |
-| Countries, network owners (optional) | `python-maxminddb`; databases download from Settings |
-| Proxy logins (optional) | `libsecret` (`secret-tool`) and a keyring |
-| Zones (optional) | NetworkManager or iwd; wired links work either way |
-| Explain (optional) | any supported AI CLI (claude, codex, gemini, pi, opencode, crush, copilot, cursor-agent) or a custom command |
-
-Integrity checks use the package database: pacman, dpkg or rpm.
-
 ## Development
 
 ```bash
 make test                                  # model parity, daemon, integrity, QML (PySide6)
 bin/citadel-daemon -v                      # run the daemon from the checkout
 python3 app/citadel_app.py                 # run the window (needs PySide6)
-CITADEL_STATE_DIR=~/.local/share/citadel-dev CITADEL_RUNTIME_DIR=$XDG_RUNTIME_DIR/citadel-dev bin/citadel-daemon
+# beside the Omarchy plugin: own folders, enforcement off
+CITADEL_ALLOW_BESIDE_PLUGIN=1 CITADEL_STATE_DIR=~/.local/share/citadel-dev \
+  CITADEL_RUNTIME_DIR=$XDG_RUNTIME_DIR/citadel-dev bin/citadel-daemon
 ```
 
 - `citadel/model.py` is a port of the plugin's `Model.js`; `tests/test_parity.py`
