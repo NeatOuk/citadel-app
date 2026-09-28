@@ -37,13 +37,13 @@ final class HostBridge: NSObject, HostXPC {
             for (i, b) in bytes.prefix(buf.count - 1).enumerated() { buf[i] = UInt8(bitPattern: b) }
         }
         let ok = withUnsafePointer(to: &addr) {
-            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
         }
-        guard ok == 0, listen(fd, 8) == 0 else { log.error("bind/listen failed on \(path, privacy: .public)"); close(fd); return }
+        guard ok == 0, Darwin.listen(fd, 8) == 0 else { log.error("bind/listen failed on \(path, privacy: .public)"); close(fd); return }
         chmod(path, 0o600)
         Thread.detachNewThread { [weak self] in
             while true {
-                let client = accept(fd, nil, nil)
+                let client = Darwin.accept(fd, nil, nil)
                 if client < 0 { continue }
                 var uid: uid_t = 0, gid: gid_t = 0
                 guard getpeereid(client, &uid, &gid) == 0, uid == getuid() else { close(client); continue }
