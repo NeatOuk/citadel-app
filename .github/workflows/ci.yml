@@ -81,5 +81,7 @@ jobs:
           set -o pipefail
           brew install xcodegen
           xcodegen generate
-          xcodebuild -project Citadel.xcodeproj -scheme CitadelHost -configuration Debug \
-            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build | tail -40
+          xcodebuild -project Citadel.xcodeproj -scheme CitadelHost -configuration Debug -destination 'platform=macOS,arch=arm64' \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build > build.log 2>&1 || {
+              grep -E "error:|warning: .*deprecated" build.log | sort -u | head -60; tail -20 build.log; exit 1; }
+          grep -E "\*\* BUILD" build.log

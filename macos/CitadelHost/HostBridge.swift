@@ -54,10 +54,10 @@ final class HostBridge: NSObject, HostXPC {
     }
 
     private func serve(_ fd: Int32) {
-        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        let conn = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
         var buffer = Data()
         while true {
-            let chunk = handle.availableData
+            let chunk = conn.availableData
             if chunk.isEmpty { break }
             buffer.append(chunk)
             while let nl = buffer.firstIndex(of: 0x0A) {
@@ -65,17 +65,17 @@ final class HostBridge: NSObject, HostXPC {
                 buffer.removeSubrange(buffer.startIndex...nl)
                 guard let msg = try? JSONSerialization.jsonObject(with: line) as? [String: Any] else { continue }
                 if msg["cmd"] as? String == "subscribe" {
-                    lock.lock(); subscribers.append(handle); lock.unlock()
+                    lock.lock(); subscribers.append(conn); lock.unlock()
                     continue                                      // keep the connection for events
                 }
                 handle(msg) { reply in
                     if let data = try? JSONSerialization.data(withJSONObject: reply) {
-                        handle.write(data + Data([0x0A]))
+                        conn.write(data + Data([0x0A]))
                     }
                 }
             }
         }
-        lock.lock(); subscribers.removeAll { $0 === handle }; lock.unlock()
+        lock.lock(); subscribers.removeAll { $0 === conn }; lock.unlock()
     }
 
     /// One daemon request -> {"id", "code", "out", "err"} (citadel-enforcer style).

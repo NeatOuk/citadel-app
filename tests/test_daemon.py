@@ -128,6 +128,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.hlog = t + "/helper.log"
         env = {"CITADEL_STATE_DIR": t + "/state", "CITADEL_RUNTIME_DIR": t + "/run", "CITADEL_LIBEXEC": t + "/libexec",
                "CITADEL_HELPER": t + "/helper", "CITADEL_PKEXEC": "", "FAKE_TICKS": self.ticks,
+               "CITADEL_HELPER_TRANSPORT": "pkexec",              # the fake Linux helper, on macOS too
                "FAKE_HELPER_LOG": self.hlog, "CITADEL_AGENT_FILE": t + "/agent", "PATH": "/usr/bin:/bin",
                # detect only this test's fake plugin, not a real one running on the machine
                "CITADEL_PLUGIN_MARKER": "fake-plugin-monitor-%d" % os.getpid()}

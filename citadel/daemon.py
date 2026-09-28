@@ -91,7 +91,8 @@ class Paths:
         self.agent_file = os.environ.get("CITADEL_AGENT_FILE") or os.path.join(home, ".config/omarchy/defaults/agent")
         # macOS: the host app (Citadel.app) plays citadel-helper's part, over a socket
         self.host_socket = os.environ.get("CITADEL_HOST_SOCKET") or os.path.join(self.runtime_dir, "host.sock")
-        self.use_host = sys.platform == "darwin" or os.environ.get("CITADEL_HELPER_TRANSPORT") == "host"
+        transport = os.environ.get("CITADEL_HELPER_TRANSPORT", "")      # "host" | "pkexec" | "" (the OS default)
+        self.use_host = transport == "host" or (sys.platform == "darwin" and transport != "pkexec")
 
 
 class Daemon:
