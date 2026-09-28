@@ -1393,7 +1393,7 @@ def tick(hist, prev, table_cache):
              "up": r["up"], "down": r["down"], "upRate": up_rate, "downRate": down_rate,
              "new": p is None, "list": list_match(host, r["raddr"]) if not system else ""}
         c.update(origin_fields(r["pid"], r["cgroup"]) if (r["pid"] and not system) else EMPTY_ORIGIN)
-        if "/bin/citadel-proxy" in c["cmd"]:
+        if re.search(r"/citadel-proxy(\s|$)", c["cmd"]):
             # Citadel's own proxy tunnels: the app's side is shown separately
             c.update(app="Citadel proxy", via="", viaId="", viaKind="")
         conns.append(c)
