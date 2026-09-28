@@ -77,13 +77,13 @@ class Paths:
         self.state = os.path.join(self.state_dir, "state.json")
         self.spec = os.path.join(self.state_dir, "enforce", "spec.json")
         self.kill = os.path.join(self.state_dir, "enforce", "kill.json")
-        runtime = os.environ.get("XDG_RUNTIME_DIR") or "/run/user/%d" % os.getuid()
-        self.runtime_dir = os.environ.get("CITADEL_RUNTIME_DIR") or os.path.join(runtime, "citadel")
+        self.runtime_dir = os.environ.get("CITADEL_RUNTIME_DIR") or os.path.join(P.runtime_base(), "citadel")
         self.socket = os.path.join(self.runtime_dir, "daemon.sock")
         here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         candidates = [os.environ.get("CITADEL_LIBEXEC"), os.path.join(here, "libexec"), "/usr/lib/citadel/libexec"]
         self.libexec = next((c for c in candidates if c and os.path.exists(os.path.join(c, "citadel-monitor"))), candidates[-1])
-        self.monitor = os.path.join(self.libexec, "citadel-monitor")
+        # another OS can bring its own monitor with the same JSON protocol
+        self.monitor = os.environ.get("CITADEL_MONITOR") or os.path.join(self.libexec, "citadel-monitor")
         self.proxy = os.path.join(self.libexec, "citadel-proxy")
         self.explain = os.path.join(self.libexec, "citadel-explain")
         self.helper = os.environ.get("CITADEL_HELPER") or "/usr/lib/citadel/citadel-enforcer"
@@ -650,7 +650,7 @@ class Daemon:
         killed = 0
         for pid in pids:
             try:
-                if os.stat("/proc/%d" % pid).st_uid != uid:      # never another user's process
+                if P.process_uid(pid) != uid:                  # never another user's process
                     continue
                 os.kill(pid, signal.SIGKILL if force else signal.SIGTERM)
                 killed += 1
@@ -1184,22 +1184,7 @@ class Daemon:
         """Is another Citadel core (the Omarchy plugin's monitor) running for this user?"""
         if self._besidePlugin:
             return False
-        own = {self._monitor.pid} if self._monitor and self._monitor.returncode is None else set()
-        uid = os.getuid()
-        for d in os.listdir("/proc"):
-            if not d.isdigit() or int(d) in own or int(d) == os.getpid():
-                continue
-            try:
-                if os.stat("/proc/" + d).st_uid != uid:
-                    continue
-                with open("/proc/%s/cmdline" % d, "rb") as f:
-                    args = f.read().decode(errors="replace").split("\0")
-            except OSError:
-                continue
-            for a in args[:3]:
-                if os.path.basename(a) == self._pluginMarker and os.path.realpath(a) != os.path.realpath(self.p.monitor):
-                    return True
-        return False
+        return P.other_core_running(self._pluginMarker, [self.p.monitor])
 
     async def _plugin_watch(self):
         while True:

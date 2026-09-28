@@ -10,6 +10,7 @@ Single instance: a second launch asks the first to show itself (with
 import argparse
 import os
 import sys
+import tempfile
 
 from PySide6.QtCore import (QByteArray, QObject, QPointF, QRectF, Qt, QTimer, QUrl, Property, Signal, Slot)
 from PySide6.QtGui import QAction, QColor, QGuiApplication, QIcon, QPainter, QPainterPath, QPen, QPixmap, QFont
@@ -23,7 +24,11 @@ QML_DIR = os.environ.get("CITADEL_QML_DIR") or os.path.join(HERE, "qml")
 
 
 def runtime_dir():
-    base = os.environ.get("XDG_RUNTIME_DIR") or "/run/user/%d" % os.getuid()
+    """Same place the daemon uses: $XDG_RUNTIME_DIR (Linux) or $TMPDIR (macOS)."""
+    base = os.environ.get("XDG_RUNTIME_DIR")
+    if not base:
+        run = "/run/user/%d" % os.getuid()
+        base = run if os.path.isdir(run) else tempfile.gettempdir()
     return os.environ.get("CITADEL_RUNTIME_DIR") or os.path.join(base, "citadel")
 
 
