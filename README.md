@@ -22,11 +22,40 @@ the same core, as a background service with its own window and tray icon.
 
 ## Install
 
+### 1. Dependencies
+
+| Distro | Command |
+|---|---|
+| Arch Linux / Omarchy | `sudo pacman -S --needed python pyside6 qt6-declarative iproute2 libnotify` |
+| Debian 13 / Ubuntu | `sudo apt install python3 python3-pyside6.qtcore python3-pyside6.qtgui python3-pyside6.qtwidgets python3-pyside6.qtnetwork python3-pyside6.qtqml python3-pyside6.qtquick python3-pyside6.qtquickcontrols2 qml6-module-qtquick qml6-module-qtquick-controls qml6-module-qtquick-layouts qml6-module-qtquick-window iproute2 libnotify-bin` |
+| Fedora | `sudo dnf install python3 python3-pyside6 qt6-qtdeclarative iproute libnotify` |
+
+Optional:
+
+| Package (Arch name) | Adds |
+|---|---|
+| `citadel-helper` 1.3+ ([repo](https://github.com/NeatOuk/citadel-helper)) | blocking and proxy routing; without it Citadel watches and asks but blocks nothing |
+| `python-maxminddb` | countries and network owners |
+| `libsecret` | proxy usernames and passwords in the keyring |
+| `networkmanager` or `iwd` | zones by Wi-Fi name (wired links work either way) |
+| an AI CLI (claude, codex, gemini, pi, …) | Explain at the gate |
+
+The packages below pull in the required dependencies themselves.
+
+### 2. Citadel
+
 Arch Linux:
 
 ```bash
-cd packaging/arch && makepkg -si          # citadel (needs pyside6 from the repos)
+cd packaging/arch && makepkg -si
 systemctl --user enable --now citadel
+```
+
+Or run it from the checkout without installing:
+
+```bash
+bin/citadel-daemon &
+bin/citadel-app
 ```
 
 Debian 13 / Ubuntu, Fedora: build the package in a container,
