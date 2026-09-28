@@ -52,6 +52,10 @@ final class FilterDataProvider: NEFilterDataProvider {
         let app = AppIdentity(token: flow.sourceAppAuditToken)
         conn.exe = app.path
         conn.app = (app.path as NSString).lastPathComponent
+        // "started by": only worth the process-table walk when a policy asks for it
+        let via = spec.rules.contains { $0.via != "*" && !$0.via.isEmpty && $0.app == conn.exe } || spec.context.mode == "guarded"
+            ? Launcher.via(pid: Int(app.pid), lookup: ProcessTable.info) : nil
+        conn.viaId = via?.id ?? ""
         conn.list = store.feeds().match(host: conn.host, ip: conn.raddr)
         let d = decide(conn, spec.rules, spec.context)
         switch d.verdict {
@@ -61,7 +65,7 @@ final class FilterDataProvider: NEFilterDataProvider {
             return .drop()
         case "prompt":
             let id = flow.identifier.uuidString
-            guard FilterService.shared.flowPaused(id: id, conn: conn, pid: app.pid, proto: socket.socketProtocol) else {
+            guard FilterService.shared.flowPaused(id: id, conn: conn, via: via, pid: app.pid, proto: socket.socketProtocol) else {
                 return spec.gateAllows ? .allow() : .drop()                    // no one to ask
             }
             gate.add(id, flow, timeout: spec.gateTimeout + 5)                  // the daemon answers first
@@ -155,11 +159,12 @@ final class FilterService: NSObject, NSXPCListenerDelegate, FilterXPC {
     }
 
     /// Tell the host a flow waits at the gate. False when no host is connected.
-    func flowPaused(id: String, conn: Conn, pid: pid_t, proto: Int32) -> Bool {
+    func flowPaused(id: String, conn: Conn, via: Via?, pid: pid_t, proto: Int32) -> Bool {
         lock.lock(); let h = host; lock.unlock()
         guard let proxy = h?.remoteObjectProxyWithErrorHandler({ _ in }) as? HostXPC else { return false }
         let info: [String: Any] = ["type": "flow", "id": id, "exe": conn.exe, "raddr": conn.raddr, "rport": conn.rport,
-                                   "host": conn.host, "proto": proto == IPPROTO_UDP ? "udp" : "tcp", "pid": Int(pid)]
+                                   "host": conn.host, "proto": proto == IPPROTO_UDP ? "udp" : "tcp", "pid": Int(pid),
+                                   "via": via?.name ?? "", "viaId": via?.id ?? "", "viaKind": via?.kind ?? ""]
         guard let data = try? JSONSerialization.data(withJSONObject: info) else { return false }
         proxy.flowPaused(data)
         return true

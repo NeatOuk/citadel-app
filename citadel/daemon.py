@@ -921,9 +921,11 @@ class Daemon:
                 "cgroup": "", "system": False, "scope": scope, "host": str(ev.get("host") or ""),
                 "cc": "", "org": "", "up": 0, "down": 0, "upRate": 0, "downRate": 0, "new": True, "list": "",
                 "via": "", "viaId": "", "viaKind": "", "cmd": "", "chain": [], "unit": "", "paused": True}
+        for k in ("via", "viaId", "viaKind"):     # the extension's launcher (Launcher.via, same rules as the monitor)
+            conn[k] = str(ev.get(k) or "")
         live = next((c for c in self.conns if c.get("pid") == conn["pid"] and c.get("raddr") == raddr), None)
         if live:                                  # the monitor may already know more (launcher, command, country)
-            for k in ("via", "viaId", "viaKind", "cmd", "chain", "cc", "org", "host"):
+            for k in ("cmd", "chain", "cc", "org", "host"):
                 conn[k] = live.get(k) or conn[k]
         d = M.decide(conn, self.rules, self._ctx())
         if d["verdict"] != "prompt":

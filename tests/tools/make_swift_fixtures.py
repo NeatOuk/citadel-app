@@ -55,7 +55,8 @@ def build():
             "netContains": [{"net": n, "ip": i, "want": M.net_contains(n, i)} for n, i in nets],
             "normHost": [{"in": h, "want": M.norm_host(h)} for h in hosts],
             "normPort": [{"in": p, "want": M.norm_port(p)} for p in ports],
-            "blocklist": blocklist_cases()}
+            "blocklist": blocklist_cases(),
+            "launcher": launcher_cases()}
 
 
 def blocklist_cases():
@@ -83,6 +84,53 @@ def blocklist_cases():
                ("ads.example.com.", ""), ("example.com", ""), ("www.example.com", ""), ("com", ""), ("tracker.io", "9.9.9.9"),
                ("metrics.example.org", ""), ("example.org", ""), ("Doubleclick.NET", ""), ("", ""), ("fine.example.net", "8.8.8.8")]
     return {"feeds": feeds, "queries": [{"host": h, "ip": ip, "want": C.list_match(h, ip)} for h, ip in queries]}
+
+
+def launcher_cases():
+    """Process trees and the launcher the monitor's origin() finds (macOS sets)."""
+    from citadel.monitor import common as C, darwin  # noqa: F401  (darwin adds launchd, Terminal, …)
+    rnd = random.Random(424242)
+    progs = [("/usr/bin/curl", []), ("/usr/bin/git", ["fetch"]), ("/bin/zsh", []), ("/bin/bash", ["/Users/u/bin/sync.sh"]),
+             ("/usr/bin/python3", ["-u", "/Users/u/tool.py"]), ("/usr/bin/python3", ["-c", "print(1)"]),
+             ("/usr/local/bin/node", ["-m", "server"]), ("/System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal", []),
+             ("/Applications/Ghostty.app/Contents/MacOS/ghostty", []), ("/usr/bin/env", ["python3"]), ("/usr/bin/sudo", ["curl"]),
+             ("/Applications/Safari.app/Contents/MacOS/Safari", []), ("/usr/bin/osascript", ["/Users/u/run.scpt"]),
+             ("/opt/homebrew/bin/python3.14", ["/Users/u/job.py"])]
+    cases = []
+    for t in range(80):
+        n = rnd.randint(1, 6)
+        table = {1: ("launchd", 0, "/sbin/launchd", ["/sbin/launchd"])}
+        parent = 1
+        pids = []
+        for k in range(n):
+            pid = 100 + t * 10 + k
+            exe, extra = rnd.choice(progs)
+            table[pid] = (os.path.basename(exe), parent, exe, [exe] + extra)
+            pids.append(pid)
+            parent = pid if rnd.random() < 0.8 else parent
+
+        class Fake:
+            @staticmethod
+            def proc_stat(pid):
+                r = table.get(pid)
+                return (r[0], r[1], pid) if r else None
+
+            @staticmethod
+            def proc_exe(pid):
+                return table.get(pid, ("", 0, "", []))[2]
+
+            @staticmethod
+            def proc_cmdline(pid):
+                return table.get(pid, ("", 0, "", []))[3]
+        C.use(Fake)
+        C.origin_cache.clear()
+        leaf = pids[-1]
+        o = C.origin(leaf)
+        v = (o or {}).get("via")
+        cases.append({"procs": [{"pid": p, "comm": r[0], "ppid": r[1], "exe": r[2], "args": r[3]} for p, r in table.items()],
+                      "pid": leaf, "want": v})
+    return {"sets": {"shells": sorted(C.SHELLS), "interpreters": sorted(C.INTERPRETERS),
+                     "terminals": sorted(C.TERMINALS), "managers": sorted(C.MANAGERS)}, "cases": cases}
 
 
 def text():
