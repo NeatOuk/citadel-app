@@ -244,6 +244,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.c.state["decisions"]["k9"]["source"], "citadel")
         self.assertEqual(self.c.state["alerts"], [])
 
+    @unittest.skipUnless(sys.platform.startswith("linux"), "the Omarchy plugin exists on Linux only")
     async def test_pauses_while_the_omarchy_plugin_runs(self):
         self.feed(tick([conn("k1", "/usr/bin/curl", "1.1.1.1", new=False)]))
         self.assertTrue(await self.c.wait_for(lambda s: s.get("helperVersion") == "1.3.0"))
