@@ -121,17 +121,22 @@ Column {
   // ---------------------------------------------------------------- clipboard
   // through the window's clipboard (Qt), so it works on any desktop
   function _copyRules() { root.p.copyText(root.s.exportRules()); root.message = "Policies copied to the clipboard." }
-  function _pasteRules() {
-    var err = root.s.importRules(root.p.pasteText())
-    root.message = err ? "Import failed: " + err : "Policies imported from the clipboard."
-  }
+  function _pasteRules() { importPanel.importPasted(root.p.pasteText()) }
 
   // ---------------------------------------------------------------- list
   RowLayout {
     width: parent.width
     PanelSectionHeader { text: "POLICIES"; foreground: root.p.foreground; fontFamily: root.p.fontFamily; Layout.fillWidth: true }
     LinkButton { p: root.p; text: "Export"; onClicked: root._copyRules() }
-    LinkButton { p: root.p; text: "Import"; onClicked: root._pasteRules() }
+    LinkButton { p: root.p; text: importPanel.visible ? "Import ▾" : "Import ▸"; onClicked: importPanel.visible = !importPanel.visible }
+  }
+  ImportPanel {
+    id: importPanel
+    visible: false
+    width: parent.width
+    p: root.p
+    s: root.s
+    onPasteRequested: root._pasteRules()
   }
   // ---------------------------------------------------------------- form
   PanelSectionHeader { text: root.editId ? "EDIT POLICY" : "NEW POLICY"; foreground: root.p.foreground; fontFamily: root.p.fontFamily }

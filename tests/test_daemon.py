@@ -283,6 +283,22 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
                         "reloaded the plugin's policies")
         self.assertTrue(await self.c.wait_for(lambda s: s.get("monitorUp") is True, 6))
 
+    async def test_import_batch_and_local_feed(self):
+        r = await self.c.call("importRules", json.dumps([{"host": "a.example.com", "action": "deny"},
+                                                         {"host": "b.example.com", "action": "allow"}]))
+        self.assertTrue(r["ok"])
+        self.assertTrue(await self.c.wait_for(lambda s: len(s.get("rules", [])) == 2))
+        r = await self.c.call("importFeed", "Imported list (3)", ["x.example.com", "Y.example.com", "bad domain"], "")
+        lid = r["result"]
+        self.assertTrue(lid.startswith("import-"))
+        path = os.path.join(self.d.p.state_dir, "lists", lid + ".txt")
+        with open(path) as f:
+            self.assertEqual(f.read().split(), ["x.example.com", "y.example.com"])
+        self.assertTrue(await self.c.wait_for(lambda s: any(l["id"] == lid and l.get("local") for l in s.get("lists", []))))
+        await self.c.call("removeList", lid)
+        self.assertTrue(await self.c.wait_for(lambda s: not any(l["id"] == lid for l in s.get("lists", []))))
+        self.assertFalse(os.path.exists(path), "an imported list's file is removed with it")
+
     async def test_unknown_command_is_refused(self):
         r = await self.c.call("_write_state")
         self.assertFalse(r["ok"])

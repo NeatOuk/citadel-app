@@ -591,10 +591,29 @@ class Daemon:
         items = p if isinstance(p, list) else (p.get("rules") if isinstance(p, dict) else None)
         if not isinstance(items, list):
             return "no rules found"
-        for r in items:
-            if isinstance(r, dict):
-                self.addRule(r)
+        fresh = [M.make_rule(r) for r in items if isinstance(r, dict)]
+        keys = {(r["profile"], r["app"], r["via"], r["host"], r["port"]) for r in fresh}
+        self.rules = [x for x in self.rules
+                      if (x["profile"], x["app"], x.get("via") or "*", x["host"], x["port"]) not in keys] + fresh
+        self._rules_changed()                      # one save, one config, one firewall update
         return ""
+
+    def importFeed(self, name, domains, url=""):
+        """A big imported domain list as a feed: a subscription when it came
+        from a URL, else a local list file in the feeds folder."""
+        if url:
+            return self.addList(name, url, "domain")
+        clean = sorted({d for d in (str(x).strip().lower() for x in domains or []) if re.match(r"^[a-z0-9_.:-]+$", d)})
+        if not clean:
+            return ""
+        lid = "import-" + M._new_id()[:10]
+        P.write_atomic(os.path.join(self.p.state_dir, "lists", lid + ".txt"), "\n".join(clean) + "\n", 0o644)
+        self.lists = self.lists + [{"id": lid, "name": str(name or "Imported list")[:120], "url": "", "local": True,
+                                    "kind": "domain", "enabled": True}]
+        self.changed("lists")
+        self.save()
+        self._send_config()
+        return lid
 
     def exportRules(self):
         return json.dumps({"version": 2, "rules": self.rules}, indent=2)
@@ -746,6 +765,12 @@ class Daemon:
         self._send_config()
 
     def removeList(self, id):
+        gone = [l for l in self.lists if l["id"] == id and l.get("local")]
+        for l in gone:                                   # an imported list's file goes too
+            try:
+                os.unlink(os.path.join(self.p.state_dir, "lists", re.sub(r"[^A-Za-z0-9_.-]", "_", l["id"]) + ".txt"))
+            except OSError:
+                pass
         self.lists = [l for l in self.lists if l["id"] != id or any(d["id"] == id for d in DEFAULT_LISTS)]
         self.changed("lists")
         self.save()

@@ -23,7 +23,7 @@ COMMANDS = {
     "exportRules", "clearLog", "killGroup", "killablePids", "setMode", "setProfileOverride", "addProfile",
     "removeProfile", "toggleProfileNetwork", "setPref", "setListEnabled", "addList", "removeList", "refreshLists",
     "downloadGeoip", "requestStats", "setEnforce", "refreshEnforceStatus", "verifyHelper", "saveProxy", "removeProxy",
-    "checkProxy", "setDefaultRoute", "explain", "testExplain",
+    "checkProxy", "setDefaultRoute", "explain", "testExplain", "importFeed",
 }
 MAX_LINE = 4 * 1024 * 1024
 

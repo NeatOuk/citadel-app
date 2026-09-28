@@ -143,6 +143,38 @@ QtObject {
   function denyConn(conn) { return addRule({ app: conn.exe || "*", via: conn.viaId || "*", host: conn.host || conn.raddr, action: "deny" }) }
   function allowConn(conn) { return addRule({ app: conn.exe || "*", via: conn.viaId || "*", host: conn.host || conn.raddr, action: "allow" }) }
   function clearLog() { decisionLog = []; call("clearLog") }
+  readonly property int importFeedThreshold: 200
+  // several policies in one daemon call (one save, one firewall update)
+  function addRules(list) {
+    var added = list.map(function(f) { return Model.makeRule(f) })
+    call("importRules", [JSON.stringify(added)])
+    return added.length
+  }
+  function importFeed(name, domains, url) { call("importFeed", [name, domains, url || ""]) }
+  // Same as the plugin's Service.importText: AdGuard, Pi-hole, hosts, plain lists, Citadel JSON.
+  function importText(text, opts) {
+    var o = opts || {}
+    var p = Model.parseImport(text, o.plainAs)
+    if (p.format === "citadel") {
+      var err = importRules(JSON.stringify(p.rules))
+      return err ? "Import failed: " + err : "Imported " + p.rules.length + " Citadel policies."
+    }
+    if (!p.allow.length && !p.block.length) return "Nothing to import: no domains found."
+    var note = "imported" + (o.name ? " from " + o.name : "")
+    var list = p.allow.map(function(d) { return { host: d, action: "allow", note: note } })
+    var asFeed = p.block.length > importFeedThreshold
+    if (!asFeed) list = list.concat(p.block.map(function(d) { return { host: d, action: "deny", note: note } }))
+    if (list.length) addRules(list)
+    if (asFeed) importFeed((o.name || "Imported list") + " (" + p.block.length + ")", p.block, o.url || "")
+    var parts = []
+    if (p.block.length) parts.push(asFeed ? p.block.length + " blocked domains as a feed" : p.block.length + " block policies")
+    if (p.allow.length) parts.push(p.allow.length + " allow policies")
+    var sk = []
+    if (p.skipped.regex) sk.push(p.skipped.regex + " regex")
+    if (p.skipped.options) sk.push(p.skipped.options + " with options Citadel can't apply")
+    if (p.skipped.other) sk.push(p.skipped.other + " other")
+    return "Imported " + parts.join(" and ") + " (" + p.format + ")." + (sk.length ? " Skipped " + sk.join(", ") + "." : "")
+  }
   function exportRules() { return JSON.stringify({ version: 2, rules: rules }, null, 2) }
   function importRules(text) {
     var p
