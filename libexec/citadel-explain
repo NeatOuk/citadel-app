@@ -35,7 +35,7 @@ TIMEOUT = 120
 CACHE_DAYS = 30
 # Omarchy installs agents through mise; the shell's PATH may not include it
 EXTRA_PATH = [os.path.join(HOME, p) for p in (".local/share/mise/shims", ".local/bin", ".bun/bin", ".cargo/bin",
-                                               ".npm-global/bin")]
+                                               ".npm-global/bin")] + ["/opt/homebrew/bin", "/usr/local/bin"]
 
 CATEGORIES = ["ads", "analytics", "telemetry", "cdn", "api", "updates", "auth", "content", "social", "other"]
 SCHEMA = {

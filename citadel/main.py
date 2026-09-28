@@ -15,6 +15,8 @@ from .api import Server
 def daemon_main(argv=None):
     ap = argparse.ArgumentParser(prog="citadel-daemon", description="Citadel's background service")
     ap.add_argument("--selftest", action="store_true", help="check the environment and exit")
+    ap.add_argument("--install-agent", action="store_true", help="macOS: start citadel-daemon at login (launchd)")
+    ap.add_argument("--remove-agent", action="store_true", help="macOS: stop starting it at login")
     ap.add_argument("--version", action="version", version=VERSION)
     ap.add_argument("-v", "--verbose", action="store_true")
     a = ap.parse_args(argv)
@@ -22,6 +24,8 @@ def daemon_main(argv=None):
     paths = Paths()
     if a.selftest:
         return selftest(paths)
+    if a.install_agent or a.remove_agent:
+        return launch_agent(install=a.install_agent)
 
     async def run():
         d = Daemon(paths)
@@ -48,15 +52,63 @@ def selftest(paths):
         print("%s %s%s" % ("ok  " if ok else "FAIL", name, " (%s)" % note if note else ""))
     for label, path in (("monitor", paths.monitor), ("proxy", paths.proxy), ("explain", paths.explain)):
         check(label + " script", os.path.exists(path), path)
-    check("iproute2 (ss)", bool(_which("ss")))
-    check("cgroup v2", os.path.exists("/sys/fs/cgroup/cgroup.controllers"))
-    check("helper installed (optional)", True, "yes" if os.access(paths.helper, os.X_OK) else "no: watch-only")
+    if sys.platform == "darwin":
+        for tool in ("lsof", "nettop", "ps", "codesign", "spctl", "netstat", "networksetup"):
+            check(tool, bool(_which(tool)))
+        check("blocking (Network Extension)", True, "not yet: watch-only (phase 2)")
+    else:
+        check("iproute2 (ss)", bool(_which("ss")))
+        check("cgroup v2", os.path.exists("/sys/fs/cgroup/cgroup.controllers"))
+        check("helper installed (optional)", True, "yes" if os.access(paths.helper, os.X_OK) else "no: watch-only")
     try:
         from . import model
         check("decision model", model.decide({"exe": "/x"}, [], {"mode": "guarded"})["verdict"] == "prompt")
     except Exception as e:                           # noqa: BLE001
         check("decision model", False, str(e))
     return 0 if all(checks) else 1
+
+
+AGENT_LABEL = "io.github.neatouk.citadel"
+AGENT_PLIST = """<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>%(label)s</string>
+  <key>ProgramArguments</key>
+  <array><string>%(python)s</string><string>%(daemon)s</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>
+  <key>ProcessType</key><string>Background</string>
+  <key>StandardErrorPath</key><string>%(log)s</string>
+</dict>
+</plist>
+"""
+
+
+def launch_agent(install=True):
+    """macOS: run citadel-daemon at login through a launchd user agent."""
+    if sys.platform != "darwin":
+        print("launchd agents are macOS only; on Linux: systemctl --user enable --now citadel", file=sys.stderr)
+        return 2
+    import subprocess
+    path = os.path.expanduser("~/Library/LaunchAgents/%s.plist" % AGENT_LABEL)
+    domain = "gui/%d" % os.getuid()
+    subprocess.run(["launchctl", "bootout", domain + "/" + AGENT_LABEL], capture_output=True)
+    if not install:
+        if os.path.exists(path):
+            os.unlink(path)
+        print("removed", path)
+        return 0
+    daemon = os.path.realpath(sys.argv[0])
+    logdir = os.path.expanduser("~/Library/Logs")
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    os.makedirs(logdir, exist_ok=True)
+    with open(path, "w") as f:
+        f.write(AGENT_PLIST % {"label": AGENT_LABEL, "python": sys.executable, "daemon": daemon,
+                               "log": os.path.join(logdir, "citadel-daemon.log")})
+    r = subprocess.run(["launchctl", "bootstrap", domain, path], capture_output=True, text=True)
+    print(("installed and started: " if r.returncode == 0 else "installed, but launchctl said: " + r.stderr.strip() + "\n") + path)
+    return r.returncode
 
 
 def _which(x):

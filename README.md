@@ -1,6 +1,7 @@
 # Citadel for Linux
 
-An outbound firewall for any Linux desktop (GNOME, KDE, Hyprland, Sway, …).
+An outbound firewall for any Linux desktop (GNOME, KDE, Hyprland, Sway, …),
+and in progress for macOS ([macos/](macos/README.md): watch-only today).
 Every app that tries to reach somewhere new waits **at the gate**, in the
 Citadel window or as a desktop notification with **Allow once / Always allow
 / Block**. Your verdicts become per-app **policies**; with
@@ -97,6 +98,19 @@ CITADEL_ALLOW_BESIDE_PLUGIN=1 CITADEL_STATE_DIR=~/.local/share/citadel-dev \
 - `tests/test_daemon.py` drives the real socket API with a fake monitor and a
   fake helper; nothing privileged runs.
 - `tests/test_qml.py` loads every tab offscreen and fails on any QML warning.
+
+## Layout
+
+| Folder | What |
+|---|---|
+| `citadel/` | the core, shared by every OS: decisions (`model.py`), the daemon and its socket API, the CLI |
+| `citadel/monitor/` | the connection monitor: `common.py` (shared), `linux.py`, `darwin.py` |
+| `citadel/platform/` | OS pieces for the daemon: `linux.py`, `darwin.py` |
+| `app/` | the Qt window and tray / menu-bar icon, shared by every OS |
+| `libexec/` | scripts the daemon starts: monitor, proxy, Explain |
+| `linux/` | Linux packaging (Arch, Debian, Fedora, Flatpak), systemd unit, desktop entries |
+| `macos/` | macOS instructions; the Xcode project (Network Extension) from phase 2 |
+| `tests/` | shared tests, plus `tests/macos/` (runs anywhere, with recorded macOS output) |
 
 ## License
 

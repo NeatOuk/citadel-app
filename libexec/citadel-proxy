@@ -56,9 +56,11 @@ def emit(obj):
 
 
 def keyring_credentials(pid):
-    """-> (user, password) from the desktop keyring, or None."""
+    """-> (user, password) from the desktop keyring (macOS: the Keychain), or None."""
+    cmd = (["security", "find-generic-password", "-s", "citadel-proxy", "-a", pid, "-w"] if sys.platform == "darwin"
+           else ["secret-tool", "lookup", "citadel-proxy", pid])
     try:
-        p = subprocess.run(["secret-tool", "lookup", "citadel-proxy", pid],
+        p = subprocess.run(cmd,
                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=10)
     except (OSError, subprocess.TimeoutExpired):
         return None
