@@ -1,7 +1,7 @@
 """The daemon's socket API: JSON lines over a Unix socket.
 
 Socket: $XDG_RUNTIME_DIR/citadel/daemon.sock (dir 0700, socket 0600). Only
-the daemon's own user may connect (checked with SO_PEERCRED).
+the daemon's own user may connect (SO_PEERCRED on Linux, LOCAL_PEERCRED on macOS).
 
 Client -> daemon:  {"id": 1, "cmd": "answer", "args": [key, "allow", "host", "forever"]}
 Daemon -> client:  {"type": "reply", "id": 1, "ok": true, "result": ...}
@@ -29,11 +29,16 @@ MAX_LINE = 4 * 1024 * 1024
 
 
 def _peer_uid(writer):
+    """uid of the process on the other end of the Unix socket, -1 if unknown."""
     sock = writer.get_extra_info("socket")
     try:
-        creds = sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
-        return struct.unpack("3i", creds)[1]
-    except OSError:
+        if hasattr(socket, "SO_PEERCRED"):                    # Linux: struct ucred {pid, uid, gid}
+            creds = sock.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("3i"))
+            return struct.unpack("3i", creds)[1]
+        # macOS / BSD: LOCAL_PEERCRED at SOL_LOCAL gives struct xucred {version, uid, ...}
+        creds = sock.getsockopt(0, 0x001, 76)
+        return struct.unpack_from("=II", creds)[1]
+    except (OSError, struct.error):
         return -1
 
 

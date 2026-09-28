@@ -1,0 +1,59 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Qt runtime libraries (offscreen QML test)
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq libegl1 libgl1 libxkbcommon0 libfontconfig1 libdbus-1-3 >/dev/null
+      - run: pip install PySide6
+      - name: Tests (parity, daemon, integrity, QML, macOS parsers)
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m unittest discover -s tests -t . -v
+      - run: python bin/citadel-daemon --selftest || true
+
+  macos:
+    runs-on: macos-15          # Apple Silicon
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: pip install PySide6
+      - name: Tests, including the live macOS monitor checks
+        env:
+          QT_QPA_PLATFORM: offscreen
+        run: python -m unittest discover -s tests -t . -v
+      - run: python bin/citadel-daemon --selftest
+      - name: Daemon and CLI over the socket
+        run: |
+          python bin/citadel-daemon -v > daemon.log 2>&1 &
+          sleep 8
+          python bin/citadel status
+          python bin/citadel call state | python -c "import json,sys; d=json.load(sys.stdin); print('conns', len(d['conns']), 'apps', len(d['apps']), 'monitorUp', d['monitorUp'])"
+          kill %1 || true
+          cat daemon.log
+      - name: Capture raw tool output
+        if: always()
+        run: tests/macos/capture.sh macos-capture
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: macos-capture
+          path: macos-capture/
