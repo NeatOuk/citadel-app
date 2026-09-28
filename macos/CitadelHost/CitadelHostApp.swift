@@ -75,6 +75,32 @@ final class ExtensionController: NSObject, ObservableObject, OSSystemExtensionRe
         }
     }
 
+    /// Per-app proxy routing (the extension's transparent proxy): on only while
+    /// some policy or the default route uses a proxy.
+    func setProxy(enabled: Bool) {
+        NETransparentProxyManager.loadAllFromPreferences { managers, error in
+            if let error { self.report("Could not load the proxy settings: \(error.localizedDescription)"); return }
+            let manager = managers?.first ?? NETransparentProxyManager()
+            if manager.protocolConfiguration == nil {
+                let proto = NETunnelProviderProtocol()
+                proto.providerBundleIdentifier = CitadelIDs.filterBundle
+                proto.serverAddress = "Citadel"
+                manager.protocolConfiguration = proto
+                manager.localizedDescription = "Citadel proxy routing"
+            }
+            if manager.isEnabled == enabled && (!enabled || manager.connection.status == .connected) { return }
+            manager.isEnabled = enabled
+            manager.saveToPreferences { error in
+                if let error { self.report("Could not save the proxy settings: \(error.localizedDescription)"); return }
+                if enabled {
+                    manager.loadFromPreferences { _ in try? manager.connection.startVPNTunnel() }
+                } else {
+                    manager.connection.stopVPNTunnel()
+                }
+            }
+        }
+    }
+
     private func report(_ text: String) { DispatchQueue.main.async { self.status = text } }
 
     // MARK: OSSystemExtensionRequestDelegate

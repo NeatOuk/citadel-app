@@ -900,6 +900,12 @@ class Daemon:
         try:
             if cmd in ("apply", "kill") and rest:
                 payload = {"spec" if cmd == "apply" else "targets": file_payload(rest[0])}
+                if cmd == "apply":
+                    # proxy logins travel to the extension in memory only, never in the spec file
+                    for px in payload["spec"].get("proxies") or []:
+                        cred = P.lookup_secret(px["id"]) if px.get("auth") else None
+                        if cred:
+                            px["user"], px["password"] = cred
             elif cmd in ("resolve", "feeds", "notify") and rest:
                 payload = json.loads(rest[0])
             else:
@@ -924,6 +930,9 @@ class Daemon:
                 self.emit({"type": "open", "view": "gate"})
                 if not self._listeners:
                     P.launch_app(["--gate"])
+            return
+        if ev.get("type") in ("error", "stats") and not self.pluginActive:
+            self._on_proxy_line(ev)               # proxy routing in the extension reports like citadel-proxy
             return
         if ev.get("type") != "flow" or not ev.get("id") or self.pluginActive:
             return

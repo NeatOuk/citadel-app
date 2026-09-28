@@ -22,6 +22,22 @@ final class SpecTests: XCTestCase {
         XCTAssertEqual(decide(c, spec.rules, spec.context).verdict, "prompt")
     }
 
+    func testRoutes() throws {
+        let json = """
+        {"format":"citadel-macos-1","rules":[{"id":"r","app":"/usr/bin/curl","host":"*","port":"*","action":"allow",
+          "route":"p1","profile":"*","via":"*","duration":"forever","pids":[]}],
+         "ctx":{"profile":"Default","mode":"guarded"},"gate":{},"defaultRoute":"direct",
+         "proxies":[{"id":"p1","name":"Office","type":"socks5","host":"192.0.2.10","port":1080,"user":"alice","password":"x"}]}
+        """
+        let spec = try XCTUnwrap(Spec(json: Data(json.utf8)))
+        XCTAssertTrue(spec.routesThroughProxy)
+        XCTAssertEqual(spec.proxies.first?.user, "alice")
+        var c = Conn(); c.exe = "/usr/bin/curl"; c.raddr = "203.0.113.5"; c.rport = 443
+        XCTAssertEqual(spec.route(for: c)?.id, "p1")
+        c.exe = "/usr/bin/git"
+        XCTAssertNil(spec.route(for: c), "no route: direct")
+    }
+
     func testRejectsOtherFormats() {
         XCTAssertNil(Spec(json: Data(#"{"rules":[]}"#.utf8)))
         XCTAssertNil(Spec(json: Data("not json".utf8)))

@@ -11,7 +11,7 @@ import os.log
 final class FilterDataProvider: NEFilterDataProvider {
     static weak var current: FilterDataProvider?
     let log = Logger(subsystem: CitadelIDs.filterBundle, category: "filter")
-    let store = PolicyStore()
+    let store = PolicyStore.shared
     let gate = GateBook<NEFilterFlow>()
     private var timer: DispatchSourceTimer?
     private(set) var drops = 0
@@ -118,6 +118,7 @@ struct AppIdentity {
 
 /// The spec the daemon applied, or nil when filtering is off.
 final class PolicyStore {
+    static let shared = PolicyStore()           // the filter and the proxy provider share it
     private let lock = NSLock()
     private var spec: Spec?
     private var blocklist = Blocklist()
@@ -158,6 +159,14 @@ final class FilterService: NSObject, NSXPCListenerDelegate, FilterXPC {
         return true
     }
 
+    /// Something for citadel-daemon (e.g. a proxy error), through the host.
+    func report(_ event: [String: Any]) {
+        lock.lock(); let h = host; lock.unlock()
+        guard let proxy = h?.remoteObjectProxyWithErrorHandler({ _ in }) as? HostXPC,
+              let data = try? JSONSerialization.data(withJSONObject: event) else { return }
+        proxy.event(data)
+    }
+
     /// Tell the host a flow waits at the gate. False when no host is connected.
     func flowPaused(id: String, conn: Conn, via: Via?, pid: pid_t, proto: Int32) -> Bool {
         lock.lock(); let h = host; lock.unlock()
@@ -173,7 +182,7 @@ final class FilterService: NSObject, NSXPCListenerDelegate, FilterXPC {
     // MARK: FilterXPC
     func apply(_ spec: Data, withReply reply: @escaping (Bool, String) -> Void) {
         guard let s = Spec(json: spec) else { reply(false, "not a citadel-macos-1 spec"); return }
-        FilterDataProvider.current?.store.set(s)
+        PolicyStore.shared.set(s)
         reply(true, "")
     }
 
@@ -192,12 +201,12 @@ final class FilterService: NSObject, NSXPCListenerDelegate, FilterXPC {
 
     func setFeeds(_ feeds: Data, withReply reply: @escaping (Bool) -> Void) {
         guard let b = Blocklist(data: feeds) else { reply(false); return }
-        FilterDataProvider.current?.store.setFeeds(b)
+        PolicyStore.shared.setFeeds(b)
         reply(true)
     }
 
     func off(withReply reply: @escaping (Bool) -> Void) {
-        FilterDataProvider.current?.store.set(nil)
+        PolicyStore.shared.set(nil)
         FilterDataProvider.current?.releaseAll()
         reply(true)
     }

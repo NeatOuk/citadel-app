@@ -20,6 +20,8 @@ import Foundation
 @objc protocol HostXPC {
     /// A new connection is paused until the gate answers (JSON: id, exe, raddr, rport, host, proto, pid).
     func flowPaused(_ info: Data)
+    /// Anything else for citadel-daemon, e.g. {"type": "error", "id", "dst", "port", "error"} from proxy routing.
+    func event(_ info: Data)
 }
 
 enum CitadelIDs {

@@ -79,3 +79,14 @@ def process_uid(pid):
 def other_core_running(marker, own_paths):
     """The Omarchy plugin only exists on Linux."""
     return False
+
+
+def lookup_secret(pid):
+    """(user, password) stored for a proxy in the Keychain, or None."""
+    try:
+        p = subprocess.run(["security", "find-generic-password", "-s", "citadel-proxy", "-a", str(pid), "-w"],
+                           capture_output=True, text=True, timeout=15)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    user, sep, password = p.stdout.rstrip("\n").partition(":")
+    return (user, password) if p.returncode == 0 and sep else None

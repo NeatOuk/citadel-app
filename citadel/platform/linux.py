@@ -123,3 +123,13 @@ def other_core_running(marker, own_paths):
             if os.path.basename(a) == marker and os.path.realpath(a) not in own:
                 return True
     return False
+
+
+def lookup_secret(pid):
+    """(user, password) stored for a proxy, or None."""
+    exe = shutil.which("secret-tool")
+    if not exe:
+        return None
+    p = subprocess.run([exe, "lookup", "citadel-proxy", pid], capture_output=True, text=True)
+    user, sep, password = p.stdout.rstrip("\n").partition(":")
+    return (user, password) if p.returncode == 0 and sep else None

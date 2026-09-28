@@ -3,6 +3,7 @@
 // to citadel-helper on Linux; the host passes the calls to the network
 // filter extension over XPC and forwards paused flows back to the daemon.
 // See citadel/platform/hostbridge.py for the other end.
+import CitadelCore
 import Darwin
 import Foundation
 import NetworkExtension
@@ -102,6 +103,7 @@ final class HostBridge: NSObject, HostXPC {
         case "apply":
             guard let spec = args["spec"], let data = try? JSONSerialization.data(withJSONObject: spec) else { done(1, "", "no spec"); return }
             ExtensionController.shared.setFilter(enabled: true)
+            ExtensionController.shared.setProxy(enabled: Spec(json: data)?.routesThroughProxy ?? false)
             f.apply(data) { ok, err in done(ok ? 0 : 1, "", err) }
         case "feeds":
             guard let data = try? JSONSerialization.data(withJSONObject: args) else { done(1, "", "bad feeds"); return }
@@ -113,6 +115,7 @@ final class HostBridge: NSObject, HostXPC {
         case "off":
             f.off { ok in done(ok ? 0 : 1) }
             ExtensionController.shared.setFilter(enabled: false)
+            ExtensionController.shared.setProxy(enabled: false)
         case "kill":
             // macOS: new policies already apply to new connections; dropping
             // established ones comes with the flow watcher (next step)
@@ -153,6 +156,10 @@ final class HostBridge: NSObject, HostXPC {
         // with no daemon listening, the extension's own deadline applies the default
         lock.lock(); let subs = subscribers; lock.unlock()
         for s in subs { s.write(info + Data([0x0A])) }
+    }
+
+    func event(_ info: Data) {
+        flowPaused(info)                         // same channel to the daemon
     }
 
     /// An event for citadel-daemon (e.g. a notification button's answer).

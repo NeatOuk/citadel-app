@@ -178,6 +178,38 @@ class HostBridgeTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await self.wait(lambda: any(r["args"].get("remove") for r in self.host.of("notify"))),
                         "the answered request's notification is removed")
 
+    async def test_proxy_logins_reach_the_host_but_never_the_spec_file(self):
+        from citadel import platform as P
+        saved = P.lookup_secret
+        P.lookup_secret = lambda pid: ("alice", "s3cret")
+        try:
+            r = await self.c.call("saveProxy", {"name": "Office", "type": "http", "host": "192.0.2.10", "port": 3128},
+                                  "", "")
+            pid = r["result"]["id"]
+            self.d.proxies = [dict(p, auth=True) if p["id"] == pid else p for p in self.d.proxies]
+            await self.c.call("addRule", {"app": "/usr/bin/curl", "action": "allow", "route": pid})
+
+            def sent():
+                for req in reversed(self.host.of("apply")):
+                    for p in req["args"]["spec"].get("proxies") or []:
+                        if p["id"] == pid and p.get("password"):
+                            return p
+                return None
+            self.assertTrue(await self.wait(sent, 8))
+            self.assertEqual((sent()["user"], sent()["password"]), ("alice", "s3cret"))
+            with open(self.d.p.spec) as f:
+                self.assertNotIn("s3cret", f.read(), "the spec file on disk has no password")
+        finally:
+            P.lookup_secret = saved
+
+    async def test_proxy_errors_from_the_extension_reach_the_log(self):
+        r = await self.c.call("saveProxy", {"name": "Office", "type": "socks5", "host": "192.0.2.10", "port": 1080}, "", "")
+        pid = r["result"]["id"]
+        for w in self.host.subscribers:
+            w.write((json.dumps({"type": "error", "id": pid, "dst": "203.0.113.5", "port": 443,
+                                 "error": "connection refused"}) + "\n").encode())
+        self.assertTrue(await self.c.wait_for(lambda s: any(e["proxy"] == "Office" for e in s.get("proxyLog", []))))
+
     async def test_off_goes_to_the_host(self):
         await self.c.call("setEnforce", False)
         self.assertTrue(await self.wait(lambda: self.host.of("off")))

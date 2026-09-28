@@ -3,12 +3,44 @@
 // wait at the gate.
 import Foundation
 
+/// A proxy from Settings, with its login (sent in memory only).
+public struct ProxyConfig: Equatable {
+    public var id = "", name = "", type = "http", host = "", port = 0
+    public var user: String? = nil, password: String? = nil
+    public var verifyTLS = true
+    public init() {}
+    public init(json j: [String: Any]) {
+        id = j["id"] as? String ?? ""
+        name = j["name"] as? String ?? id
+        type = j["type"] as? String ?? "http"
+        host = j["host"] as? String ?? ""
+        port = (j["port"] as? NSNumber)?.intValue ?? 0
+        user = j["user"] as? String
+        password = j["password"] as? String
+        verifyTLS = (j["verifyTls"] as? NSNumber)?.boolValue ?? true
+    }
+}
+
 public struct Spec {
     public var rules: [Rule] = []
     public var context = Context()
     /// What an unanswered gate request becomes when its time runs out.
     public var gateAllows = true
     public var gateTimeout: TimeInterval = 90
+    public var defaultRoute = "direct"
+    public var proxies: [ProxyConfig] = []
+
+    /// Does any policy (or the default route) send traffic through a proxy?
+    public var routesThroughProxy: Bool {
+        guard !proxies.isEmpty else { return false }
+        return defaultRoute != "direct" || rules.contains { $0.action == "allow" && $0.route != "default" && $0.route != "direct" }
+    }
+
+    /// The proxy (or a missing one) that carries this connection, nil for direct.
+    public func route(for c: Conn) -> Proxy? {
+        routeFor(c, rules, context, defaultRoute: defaultRoute,
+                 proxies: proxies.map { Proxy(id: $0.id, name: $0.name, listen: 0) })
+    }
 
     public init() {}
 
@@ -20,6 +52,8 @@ public struct Spec {
         let gate = j["gate"] as? [String: Any] ?? [:]
         gateAllows = (gate["default"] as? String) != "deny"
         if let t = (gate["timeout"] as? NSNumber)?.doubleValue, t > 0 { gateTimeout = t }
+        defaultRoute = j["defaultRoute"] as? String ?? "direct"
+        proxies = (j["proxies"] as? [[String: Any]] ?? []).map(ProxyConfig.init(json:))
     }
 }
 
