@@ -66,3 +66,12 @@ jobs:
         with:
           name: macos-capture
           path: macos-capture/
+
+  swift:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - run: swift --version
+      - name: CitadelCore parity with model.py / Model.js
+        working-directory: macos/Packages/CitadelCore
+        run: swift test

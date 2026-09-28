@@ -11,3 +11,5 @@ linux/packaging/out/
 linux/packaging/arch/*.pkg.tar.zst
 linux/packaging/arch/src/
 linux/packaging/arch/pkg/
+macos/Packages/*/.build/
+macos/Packages/*/.swiftpm/
