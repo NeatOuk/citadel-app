@@ -51,7 +51,7 @@ The packages below pull in the required dependencies themselves.
 Arch Linux:
 
 ```bash
-cd packaging/arch && makepkg -si
+cd linux/packaging/arch && makepkg -si
 systemctl --user enable --now citadel
 ```
 
@@ -63,10 +63,10 @@ bin/citadel-app
 ```
 
 Debian 13 / Ubuntu, Fedora: build the package in a container,
-`packaging/build-in-docker.sh deb` or `packaging/build-in-docker.sh rpm`,
-then install the file from `packaging/out/`.
+`linux/packaging/build-in-docker.sh deb` or `linux/packaging/build-in-docker.sh rpm`,
+then install the file from `linux/packaging/out/`.
 
-Flatpak (window only): `packaging/flatpak/io.github.neatouk.Citadel.yml`.
+Flatpak (window only): `linux/packaging/flatpak/io.github.neatouk.Citadel.yml`.
 The daemon and helper must still be installed natively; a sandbox can't
 see other apps' connections or change the firewall.
 

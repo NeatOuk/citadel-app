@@ -1,5 +1,5 @@
 # Build Citadel (daemon, app, CLI) from this checkout:
-#   cd packaging/arch && makepkg -si
+#   cd linux/packaging/arch && makepkg -si
 # Then: systemctl --user enable --now citadel
 # Blocking needs citadel-helper (separate package, github.com/NeatOuk/citadel-helper).
 pkgname=citadel
@@ -18,6 +18,6 @@ makedepends=('make')
 conflicts=('citadel-app')
 
 package() {
-  cd "$startdir/../.."
+  cd "$startdir/../../.."
   make install DESTDIR="$pkgdir" PREFIX=/usr
 }

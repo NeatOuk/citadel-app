@@ -3,7 +3,7 @@
 # (nftables) must be installed natively, from the Arch/.deb/.rpm packages.
 # The app talks to the host daemon through $XDG_RUNTIME_DIR/citadel/.
 #
-#   flatpak-builder --user --install build-dir packaging/flatpak/io.github.neatouk.Citadel.yml
+#   flatpak-builder --user --install build-dir linux/packaging/flatpak/io.github.neatouk.Citadel.yml
 app-id: io.github.neatouk.Citadel
 runtime: org.kde.Platform
 runtime-version: '6.8'
@@ -30,4 +30,4 @@ modules:
       - rm -rf /app/lib/citadel /app/lib/systemd /app/bin/citadel-daemon /app/etc
     sources:
       - type: dir
-        path: ../..
+        path: ../../..

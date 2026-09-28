@@ -5,9 +5,9 @@ __pycache__/
 *.pkg.tar.zst
 *.deb
 *.rpm
-/packaging/arch/src/
-/packaging/arch/pkg/
-packaging/out/
-packaging/arch/*.pkg.tar.zst
-packaging/arch/src/
-packaging/arch/pkg/
+/linux/packaging/arch/src/
+/linux/packaging/arch/pkg/
+linux/packaging/out/
+linux/packaging/arch/*.pkg.tar.zst
+linux/packaging/arch/src/
+linux/packaging/arch/pkg/
