@@ -1,0 +1,17 @@
+[Desktop Entry]
+Type=Application
+Name=Citadel
+GenericName=Outbound firewall
+Comment=See what leaves your machine and decide which apps may connect
+Exec=citadel-app %U
+Icon=io.github.neatouk.Citadel
+Terminal=false
+Categories=Network;Security;System;
+Keywords=firewall;network;privacy;little snitch;proxy;
+StartupNotify=true
+StartupWMClass=io.github.neatouk.Citadel
+Actions=gate;
+
+[Desktop Action gate]
+Name=Open the Gate
+Exec=citadel-app --gate

@@ -1,0 +1,14 @@
+[Unit]
+Description=Citadel outbound firewall
+Documentation=https://github.com/NeatOuk/citadel-app
+# notifications and the gate need the session bus
+After=dbus.socket
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/citadel-daemon
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Citadel (tray)
+Comment=Citadel's tray icon
+Exec=citadel-app --hidden
+Icon=io.github.neatouk.Citadel
+Terminal=false
+NoDisplay=true
+X-GNOME-Autostart-enabled=true

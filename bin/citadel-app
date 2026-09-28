@@ -3,6 +3,6 @@
 import os, sys
 here = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
 home = os.environ.get("CITADEL_HOME") or (here if os.path.isdir(os.path.join(here, "citadel")) else "/usr/share/citadel")
-sys.path.insert(0, home)
-from citadel.main import daemon_main
-sys.exit(daemon_main())
+sys.path.insert(0, os.path.join(home, "app"))
+from citadel_app import main
+sys.exit(main())
