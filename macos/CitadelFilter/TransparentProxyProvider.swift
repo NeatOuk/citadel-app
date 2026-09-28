@@ -64,7 +64,6 @@ final class ProxyTunnel {
     private var upstream: NWConnection?
     private var closed = false
     private let queue = DispatchQueue(label: "citadel.proxy.tunnel")
-    private static var live: Set<ObjectIdentifier> = []
     private static var liveTunnels: [ObjectIdentifier: ProxyTunnel] = [:]
     private static let liveLock = NSLock()
 
