@@ -1,0 +1,16 @@
+#!/usr/bin/make -f
+%:
+	dh $@
+
+override_dh_auto_build:
+
+override_dh_auto_test:
+
+override_dh_auto_install:
+	$(MAKE) install DESTDIR=$(CURDIR)/debian/citadel PREFIX=/usr
+	rm -rf $(CURDIR)/debian/citadel/usr/share/licenses
+
+# a user unit: enabled per user (systemctl --user enable --now citadel)
+override_dh_installsystemd:
+
+override_dh_installsystemduser:

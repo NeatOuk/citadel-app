@@ -1,0 +1,21 @@
+Source: citadel
+Section: net
+Priority: optional
+Maintainer: Neat Ouk <neatk13@gmail.com>
+Build-Depends: debhelper-compat (= 13), python3
+Standards-Version: 4.6.2
+Homepage: https://github.com/NeatOuk/citadel-app
+Rules-Requires-Root: no
+
+Package: citadel
+Architecture: all
+Depends: ${misc:Depends}, python3, python3-pyside6.qtcore, python3-pyside6.qtgui, python3-pyside6.qtwidgets,
+ python3-pyside6.qtnetwork, python3-pyside6.qtqml, python3-pyside6.qtquick, python3-pyside6.qtquickcontrols2,
+ qml6-module-qtquick, qml6-module-qtquick-controls, qml6-module-qtquick-layouts, qml6-module-qtquick-window,
+ qml6-module-qtqml-workerscript, iproute2, libnotify-bin
+Recommends: citadel-helper (>= 1.3.0), python3-maxminddb, libsecret-tools
+Description: outbound firewall for Linux desktops
+ Citadel shows which apps connect where, asks at the gate when something new
+ wants out (in its window or as a notification), and turns your verdicts into
+ per-app policies. With citadel-helper it enforces them with nftables and can
+ route chosen apps through HTTP, HTTPS or SOCKS5 proxies.

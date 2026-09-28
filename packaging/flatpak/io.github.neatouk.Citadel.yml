@@ -1,0 +1,33 @@
+# Citadel's window as a Flatpak. Only the UI can live in a sandbox: the
+# daemon (reads every app's /proc entry, runs ss) and the root helper
+# (nftables) must be installed natively, from the Arch/.deb/.rpm packages.
+# The app talks to the host daemon through $XDG_RUNTIME_DIR/citadel/.
+#
+#   flatpak-builder --user --install build-dir packaging/flatpak/io.github.neatouk.Citadel.yml
+app-id: io.github.neatouk.Citadel
+runtime: org.kde.Platform
+runtime-version: '6.8'
+sdk: org.kde.Sdk
+base: io.qt.PySide.BaseApp
+base-version: '6.8'
+command: citadel-app
+finish-args:
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  # the host daemon's socket (and the app's single-instance socket)
+  - --filesystem=xdg-run/citadel:create
+  # tray icon (StatusNotifierItem)
+  - --talk-name=org.kde.StatusNotifierWatcher
+  - --env=CITADEL_HOME=/app/share/citadel
+modules:
+  - name: citadel
+    buildsystem: simple
+    build-commands:
+      - make install PREFIX=/app DESTDIR=
+      # the daemon, its helpers and the user unit belong to the host package
+      - rm -rf /app/lib/citadel /app/lib/systemd /app/bin/citadel-daemon /app/etc
+    sources:
+      - type: dir
+        path: ../..

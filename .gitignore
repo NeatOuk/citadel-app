@@ -7,3 +7,7 @@ __pycache__/
 *.rpm
 /packaging/arch/src/
 /packaging/arch/pkg/
+packaging/out/
+packaging/arch/*.pkg.tar.zst
+packaging/arch/src/
+packaging/arch/pkg/

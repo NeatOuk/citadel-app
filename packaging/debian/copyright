@@ -1,0 +1,7 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: citadel
+Source: https://github.com/NeatOuk/citadel-app
+
+Files: *
+Copyright: 2026 Neat Ouk
+License: MIT

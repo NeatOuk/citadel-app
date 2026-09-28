@@ -1,0 +1,23 @@
+# Build Citadel (daemon, app, CLI) from this checkout:
+#   cd packaging/arch && makepkg -si
+# Then: systemctl --user enable --now citadel
+# Blocking needs citadel-helper (separate package, github.com/NeatOuk/citadel-helper).
+pkgname=citadel
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Outbound firewall for Linux desktops: see what leaves, decide at the gate, per-app policies and proxy routing"
+arch=('any')
+url="https://github.com/NeatOuk/citadel-app"
+license=('MIT')
+depends=('python' 'pyside6' 'qt6-declarative' 'iproute2' 'libnotify')
+optdepends=('citadel-helper>=1.3.0: enforcement (blocking) and proxy routing'
+            'python-maxminddb: countries and network owners'
+            'libsecret: proxy logins in the keyring'
+            'networkmanager: zones by connection name (iwd and wired also work)')
+makedepends=('make')
+conflicts=('citadel-app')
+
+package() {
+  cd "$startdir/../.."
+  make install DESTDIR="$pkgdir" PREFIX=/usr
+}

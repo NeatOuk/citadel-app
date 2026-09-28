@@ -1,0 +1,5 @@
+citadel (0.1.0) unstable; urgency=medium
+
+  * First standalone release: citadel-daemon, citadel-app, citadel CLI.
+
+ -- Neat Ouk <neatk13@gmail.com>  Mon, 28 Sep 2026 10:00:00 +0700
