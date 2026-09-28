@@ -12,6 +12,58 @@ proxies.
 This is the standalone edition of the [Citadel Omarchy plugin](https://github.com/NeatOuk/citadel):
 the same core, as a background service with its own window and tray icon.
 
+## Key features
+
+- **Ask at the gate.** When an app connects somewhere new, Citadel asks. Answer in
+  the window or straight from the notification: **Allow once**, **Always allow** or
+  **Block**. Unanswered requests fall back to your default after a timeout.
+- **Per-app policies.** A policy can cover:
+  - an app
+  - a host (subdomains included), an IP or CIDR, a port
+  - an app **only when a given script or program starts it**
+  - a zone
+
+  The most specific policy wins. Search and filter them, and export or import them.
+- **Real blocking, per app.** With citadel-helper, policies are enforced with
+  nftables per app (its cgroup), not just per address. Blocking something also
+  closes its open connections.
+- **Guarded, Open and Lockdown modes**, with optional timers.
+- **Knows who started it.** `curl via backup.sh` or `git in ghostty`, with the
+  command line shown and its secrets (tokens, passwords, auth headers) masked.
+  Short-lived connections are caught too.
+- **Integrity checks.** Programs are checked against their package's checksums
+  (pacman, dpkg or rpm). An allowed app that changes without an update comes back
+  to the gate.
+- **Per-app proxy routing**, like Proxifier.
+  - Send chosen apps through HTTP, HTTPS or SOCKS5 proxies; logins are kept in
+    your keyring.
+  - It fails closed: if the proxy is down, the app is blocked, never sent direct.
+- **Threat feeds and imports.**
+  - One-click feeds: FireHOL, Spamhaus DROP, StevenBlack, HaGeZi.
+  - Import AdGuard rules, Pi-hole lists, hosts files or any list URL.
+- **Explain.** See who owns a destination (e.g. *Google LLC*). On request, your own
+  AI agent (claude, codex, gemini, pi, …) explains what it's for and suggests allow
+  or block.
+- **Traffic and history.**
+  - Live connections per app, with rates, countries and why each one is allowed
+    or blocked.
+  - 30 days of history: top apps, hosts and countries, and the decision log.
+- **Zones.** Link Wi-Fi or wired networks to zones, and Citadel switches policies
+  as you move.
+- **Runs quietly in the background.** A user service that keeps working with the
+  window closed, plus a tray icon and a `citadel` CLI. It works on GNOME, KDE,
+  Hyprland, Sway and others.
+- **Shares policies with the Omarchy plugin**, and steps aside while the plugin runs.
+- **Local and private.**
+  - No account, no telemetry.
+  - Feeds and databases download only when you turn them on.
+  - Explain sends nothing until you press it.
+  - The only part that runs as root is a small helper that validates everything
+    it receives.
+
+On macOS, watching and the gate work from a checkout today. Blocking and proxy
+routing are built and wait for signing; see [macos/](macos/README.md).
+
 ## How it fits together
 
 | Piece | What it does |
