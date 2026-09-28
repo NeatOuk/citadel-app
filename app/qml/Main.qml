@@ -101,6 +101,7 @@ ApplicationWindow {
             dim: true
             font.pixelSize: Style.font.caption
             text: !citadel.connected ? "Not connected to citadel-daemon"
+                  : citadel.pluginActive ? "Paused: the Omarchy plugin is running Citadel"
                   : root.modeLabel(citadel.mode)
                     + (citadel.silentUntil > 0 ? " until " + Model.clock(citadel.silentUntil) : "")
                     + "  ·  " + citadel.activeProfile + " zone"
@@ -134,8 +135,34 @@ ApplicationWindow {
         }
       }
 
+      // ------------------------------------------------ paused beside the plugin
+      Rectangle {
+        visible: citadel.connected && citadel.pluginActive
+        width: parent.width
+        height: paused.implicitHeight + Style.space(20)
+        radius: Style.cornerRadius
+        color: Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.14)
+        Column {
+          id: paused
+          anchors.left: parent.left; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+          anchors.margins: Style.space(12)
+          spacing: Style.space(4)
+          Lbl { p: root; text: "Citadel is running as the Omarchy plugin"; strong: true; font.pixelSize: Style.font.body }
+          Lbl {
+            p: root
+            width: parent.width
+            wrapMode: Text.WordWrap
+            maximumLineCount: 5
+            dim: true
+            text: "Use the tower in your Omarchy bar. This service is paused so the two never fight over the firewall "
+                  + "or your policies. To use this app instead, remove Citadel from the bar (omarchy plugin disable neat.citadel); "
+                  + "it takes over within a few seconds, with the same policies."
+          }
+        }
+      }
+
       Column {
-        visible: citadel.connected
+        visible: citadel.connected && !citadel.pluginActive
         width: parent.width
         spacing: Style.space(12)
         ButtonGroup {

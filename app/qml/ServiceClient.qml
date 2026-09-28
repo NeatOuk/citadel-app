@@ -73,6 +73,7 @@ QtObject {
   property var installedAgents: []
   property int uid: -1
   property string daemonVersion: ""
+  property bool pluginActive: false         // the Omarchy plugin runs Citadel; this service is paused
   property bool helperUsable: false
   property bool helperOutdated: false
   property string helperProblem: ""

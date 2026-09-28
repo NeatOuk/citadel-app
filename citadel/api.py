@@ -119,7 +119,7 @@ class Server:
         if cmd == "state":
             return {"type": "reply", "id": mid, "ok": True, "result": self.d.public()}
         if cmd == "status":
-            s = self.d.public(["mode", "activeProfile", "enforce", "enforceActive", "enforceError", "monitorUp",
+            s = self.d.public(["pluginActive", "mode", "activeProfile", "enforce", "enforceActive", "enforceError", "monitorUp",
                                "helperInstalled", "helperVersion", "daemonVersion", "totals", "enforceDrops"])
             s["helperUsable"] = self.d.helperUsable
             s["waiting"] = len(self.d.alerts)
@@ -127,6 +127,10 @@ class Server:
             return {"type": "reply", "id": mid, "ok": True, "result": s}
         if cmd not in COMMANDS or not isinstance(args, list):
             return {"type": "reply", "id": mid, "ok": False, "error": "unknown command %r" % cmd}
+        if self.d.pluginActive:
+            return {"type": "reply", "id": mid, "ok": False, "paused": True,
+                    "error": "The Citadel Omarchy plugin is active, so this service is paused. "
+                             "Remove Citadel from the Omarchy bar to use it here."}
         try:
             result = getattr(self.d, cmd)(*args)
         except TypeError as e:

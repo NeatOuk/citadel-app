@@ -40,10 +40,13 @@ see other apps' connections or change the firewall.
 Then install citadel-helper (1.3 or newer) and switch **Settings →
 Enforcement** on to actually block.
 
-**Using the Omarchy plugin too?** Don't run both cores at once yet: they
-share `~/.local/share/citadel` and would both drive the firewall. Remove
-the plugin from the bar first. (Making the plugin a client of this daemon
-is the next step.)
+**Using the Omarchy plugin too?** They are separate products that share
+the same policies (`~/.local/share/citadel`). Only one runs Citadel at a
+time: while the plugin is active, the service pauses by itself (no
+monitor, no firewall changes, no writes to your policies) and the window
+says so. To switch to the app, `omarchy plugin disable neat.citadel`; the
+service takes over within seconds, with the same policies. To switch back,
+enable the plugin again and the service steps aside.
 
 ## Requirements
 

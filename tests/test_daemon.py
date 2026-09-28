@@ -128,7 +128,9 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.hlog = t + "/helper.log"
         env = {"CITADEL_STATE_DIR": t + "/state", "CITADEL_RUNTIME_DIR": t + "/run", "CITADEL_LIBEXEC": t + "/libexec",
                "CITADEL_HELPER": t + "/helper", "CITADEL_PKEXEC": "", "FAKE_TICKS": self.ticks,
-               "FAKE_HELPER_LOG": self.hlog, "CITADEL_AGENT_FILE": t + "/agent", "PATH": "/usr/bin:/bin"}
+               "FAKE_HELPER_LOG": self.hlog, "CITADEL_AGENT_FILE": t + "/agent", "PATH": "/usr/bin:/bin",
+               # detect only this test's fake plugin, not a real one running on the machine
+               "CITADEL_PLUGIN_MARKER": "fake-plugin-monitor-%d" % os.getpid()}
         self.saved_env = {k: os.environ.get(k) for k in env}
         os.environ.update(env)
         self.d = Daemon(Paths())
@@ -241,6 +243,44 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await self.c.wait_for(lambda s: "k9" in s.get("decisions", {})))
         self.assertEqual(self.c.state["decisions"]["k9"]["source"], "citadel")
         self.assertEqual(self.c.state["alerts"], [])
+
+    async def test_pauses_while_the_omarchy_plugin_runs(self):
+        self.feed(tick([conn("k1", "/usr/bin/curl", "1.1.1.1", new=False)]))
+        self.assertTrue(await self.c.wait_for(lambda s: s.get("helperVersion") == "1.3.0"))
+        await self.c.call("setEnforce", True)
+        self.assertTrue(await self.c.wait_for(lambda s: s.get("enforceAppliedAt", 0) > 0, 6))
+        await asyncio.sleep(0.5)
+        before = len(self.helper_calls())
+        mtime = os.path.getmtime(self.d.p.state)
+        fake = os.path.join(self.tmp.name, "neat.citadel", "bin", os.environ["CITADEL_PLUGIN_MARKER"])
+        os.makedirs(os.path.dirname(fake))
+        with open(fake, "w") as f:
+            f.write("import time\ntime.sleep(60)\n")
+        plugin = await asyncio.create_subprocess_exec(sys.executable, fake)
+        try:
+            self.assertTrue(await self.c.wait_for(lambda s: s.get("pluginActive") is True, 8), "paused")
+            self.assertFalse(self.c.state["monitorUp"])
+            r = await self.c.call("addRule", {"app": "/usr/bin/curl", "action": "deny"})
+            self.assertFalse(r["ok"])
+            self.assertIn("Omarchy plugin", r["error"])
+            self.d._sync_enforcement(True)
+            self.d._kill([{"cgroup": SLICE + "app-x.scope", "ip": "1.1.1.1"}])
+            await asyncio.sleep(1)
+            self.assertEqual(len(self.helper_calls()), before, "no helper call while paused")
+            self.assertEqual(os.path.getmtime(self.d.p.state), mtime, "state.json untouched while paused")
+            # the plugin changes the policies meanwhile
+            with open(self.d.p.state) as f:
+                st = json.load(f)
+            st["rules"].append({"id": "fromPlugin", "app": "/usr/bin/git", "action": "allow"})
+            with open(self.d.p.state, "w") as f:
+                json.dump(st, f)
+        finally:
+            plugin.terminate()
+            await plugin.wait()
+        self.assertTrue(await self.c.wait_for(lambda s: s.get("pluginActive") is False, 8), "resumed")
+        self.assertTrue(await self.c.wait_for(lambda s: any(r["id"] == "fromPlugin" for r in s.get("rules", []))),
+                        "reloaded the plugin's policies")
+        self.assertTrue(await self.c.wait_for(lambda s: s.get("monitorUp") is True, 6))
 
     async def test_unknown_command_is_refused(self):
         r = await self.c.call("_write_state")

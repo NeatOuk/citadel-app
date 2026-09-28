@@ -62,7 +62,8 @@ PUBLIC = ["rules", "profiles", "profileOverride", "mode", "silentUntil", "enforc
           "totals", "monitorError", "monitorUp", "ticks", "now", "activeProfile", "inWheel", "helperInstalled",
           "enforceActive", "enforceBusy", "enforceError", "enforceAppliedAt", "enforceDrops", "proxies", "defaultRoute",
           "proxyStatus", "proxyLog", "proxyCarried", "proxyCheck", "proxyError", "explanations", "explainTestResult",
-          "defaultAgent", "installedAgents", "uid", "session", "resolved", "daemonVersion", "privilegedGroup"]
+          "defaultAgent", "installedAgents", "uid", "session", "resolved", "daemonVersion", "privilegedGroup",
+          "pluginActive"]
 
 
 def _now():
@@ -115,6 +116,12 @@ class Daemon:
         self.explanations, self.explainTestResult = {}, {}
         self.defaultAgent, self.installedAgents = "", []
         self.daemonVersion = VERSION
+        # The Citadel Omarchy plugin runs its own core. While it is active this
+        # daemon pauses entirely (no monitor, no firewall, no state writes), so
+        # the two never fight over the firewall table or state.json.
+        self.pluginActive = False
+        self._besidePlugin = os.environ.get("CITADEL_ALLOW_BESIDE_PLUGIN") == "1"   # dev: own dirs, watch-only
+        self._pluginMarker = os.environ.get("CITADEL_PLUGIN_MARKER") or "citadel-monitor"
         self.loaded = False
         # internals
         self._lastSpec, self._appliedRoutes, self._pendingRoutes = "", None, None
@@ -221,7 +228,7 @@ class Daemon:
         self.save()
 
     def save(self):
-        if not self.loaded:
+        if not self.loaded or self.pluginActive:
             return
         if self._saveHandle:
             self._saveHandle.cancel()
@@ -240,6 +247,9 @@ class Daemon:
     # ------------------------------------------------------------ monitor
     async def _run_monitor(self):
         while True:
+            if self.pluginActive:
+                await asyncio.sleep(1)
+                continue
             env = dict(os.environ, CITADEL_STATE_DIR=self.p.state_dir)
             try:
                 self._monitor = await asyncio.create_subprocess_exec(
@@ -806,6 +816,11 @@ class Daemon:
         self._run(["status"], done)
 
     def _run(self, args, done=None):
+        # paused beside the plugin: only read-only status, never apply/kill/off
+        if self.pluginActive and args[0] != "status":
+            if done:
+                done(1, "", "paused: the Citadel Omarchy plugin is active")
+            return
         # Single choke point for privileged calls: "apply" and "kill" only ever
         # go to a helper whose verified version is >= MIN_HELPER. ("status" and
         # "off" are safe with any helper.)
@@ -843,7 +858,7 @@ class Daemon:
 
     def _do_sync(self):
         self._syncHandle = None
-        if not self.enforce or not self.helperUsable or self.uid < 0:
+        if not self.enforce or not self.helperUsable or self.uid < 0 or self.pluginActive:
             return
         ctx = self._ctx()
         res = M.build_spec(self.rules, ctx, self.conns, self.apps, self.ipCidrs, self.uid)
@@ -904,7 +919,7 @@ class Daemon:
         self._run(["apply", self.p.spec], done)
 
     def _kill(self, targets):
-        if not self.enforce or not self.helperUsable or not targets:
+        if not self.enforce or not self.helperUsable or not targets or self.pluginActive:
             return
         try:
             P.write_atomic(self.p.kill, json.dumps(targets) + "\n")
@@ -970,7 +985,7 @@ class Daemon:
     # ------------------------------------------------------------ proxy process
     async def _run_proxy(self):
         while True:
-            if not self.proxies:
+            if not self.proxies or self.pluginActive:
                 await asyncio.sleep(1)
                 continue
             try:
@@ -1164,14 +1179,82 @@ class Daemon:
             else:
                 self._set_explanation(job["key"], v)
 
+    # ------------------------------------------------------------ the Omarchy plugin
+    def _plugin_running(self):
+        """Is another Citadel core (the Omarchy plugin's monitor) running for this user?"""
+        if self._besidePlugin:
+            return False
+        own = {self._monitor.pid} if self._monitor and self._monitor.returncode is None else set()
+        uid = os.getuid()
+        for d in os.listdir("/proc"):
+            if not d.isdigit() or int(d) in own or int(d) == os.getpid():
+                continue
+            try:
+                if os.stat("/proc/" + d).st_uid != uid:
+                    continue
+                with open("/proc/%s/cmdline" % d, "rb") as f:
+                    args = f.read().decode(errors="replace").split("\0")
+            except OSError:
+                continue
+            for a in args[:3]:
+                if os.path.basename(a) == self._pluginMarker and os.path.realpath(a) != os.path.realpath(self.p.monitor):
+                    return True
+        return False
+
+    async def _plugin_watch(self):
+        while True:
+            active = self._plugin_running()
+            if active != self.pluginActive:
+                if active:
+                    self._pause()
+                else:
+                    self._resume()
+            await asyncio.sleep(2)
+
+    def _pause(self):
+        log.warning("the Citadel Omarchy plugin is active: pausing (no monitor, firewall or state writes)")
+        if self._saveHandle:
+            self._saveHandle.cancel()
+            self._saveHandle = None
+        if self._syncHandle:
+            self._syncHandle.cancel()
+            self._syncHandle = None
+        self.pluginActive = True
+        for proc in (self._monitor, self._proxy):
+            if proc and proc.returncode is None:
+                try:
+                    if proc.stdin:
+                        proc.stdin.close()
+                    proc.terminate()
+                except ProcessLookupError:
+                    pass
+        for key in list(self._notifications):
+            self._close_notification(key)
+        self.conns, self.groups, self.alerts, self.decisions, self.recentShort = [], [], [], {}, []
+        self.monitorUp = False
+        self.changed("pluginActive", "conns", "groups", "alerts", "decisions", "recentShort", "monitorUp")
+
+    def _resume(self):
+        log.warning("the Citadel Omarchy plugin stopped: resuming")
+        self.pluginActive = False
+        self.ticks = 0
+        self._lastSpec = ""
+        self._load()                     # the plugin may have changed the policies
+        self.changed("pluginActive")
+        if self.enforce:
+            self._sync_enforcement(True)
+
     # ------------------------------------------------------------ lifecycle
     async def start(self):
         os.makedirs(os.path.dirname(self.p.spec), exist_ok=True)
         self.privilegedGroup, self.inWheel = P.privileged_group()
+        self.pluginActive = self._plugin_running()
+        if self.pluginActive:
+            log.warning("the Citadel Omarchy plugin is active: starting paused")
         self._load()
         loop = asyncio.get_running_loop()
         for coro in (self._flush_loop(), self._clock_loop(), self._run_monitor(), self._run_proxy(), self._helper_loop(),
-                     self._helper_watch(), self._explain_loop(), self._agents_watch()):
+                     self._helper_watch(), self._explain_loop(), self._agents_watch(), self._plugin_watch()):
             self._tasks.append(loop.create_task(coro))
 
     async def stop(self):
