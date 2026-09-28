@@ -1,0 +1,6 @@
+Executable=/Applications/Example.app/Contents/MacOS/Example
+Identifier=com.example.app
+Authority=Developer ID Application: Example Corp (ABCDE12345)
+Authority=Developer ID Certification Authority
+Authority=Apple Root CA
+TeamIdentifier=ABCDE12345

@@ -1,0 +1,7 @@
+    1     0     0 Mon Sep 28 08:00:00 2026 /sbin/launchd
+  400     1 __UID__ Mon Sep 28 08:01:00 2026 /System/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal
+  450   400 __UID__ Mon Sep 28 08:01:05 2026 /bin/zsh
+  460   450 __UID__ Mon Sep 28 08:02:00 2026 /usr/bin/python3
+  501     1 __UID__ Mon Sep 28 08:03:00 2026 /Applications/Safari.app/Contents/MacOS/Safari
+  777   460 __UID__ Mon Sep 28 09:00:00 2026 /usr/bin/curl
+  888     1 __UID__ Mon Sep 28 08:00:30 2026 /usr/sbin/mDNSResponder

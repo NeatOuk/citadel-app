@@ -1,0 +1,4 @@
+Executable=/Users/me/bin/tool
+Identifier=tool
+Signature=adhoc
+TeamIdentifier=not set

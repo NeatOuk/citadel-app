@@ -1,0 +1,9 @@
+Executable=/Applications/Safari.app/Contents/MacOS/Safari
+Identifier=com.apple.Safari
+Format=app bundle with Mach-O universal (x86_64 arm64e)
+CodeDirectory v=20400 size=1 flags=0x0(none) hashes=1+7 location=embedded
+Signature size=4442
+Authority=Software Signing
+Authority=Apple Code Signing Certification Authority
+Authority=Apple Root CA
+TeamIdentifier=not set

@@ -1,0 +1,11 @@
+
+Hardware Port: Ethernet Adapter (en5)
+Device: en5
+Ethernet Address: aa:bb:cc:dd:ee:00
+
+Hardware Port: Wi-Fi
+Device: en0
+Ethernet Address: aa:bb:cc:dd:ee:ff
+
+VLAN Configurations
+===================

@@ -1,0 +1,6 @@
+<dictionary> {
+  InterfaceType : WiFi
+  LinkStatusActive : TRUE
+  SSID : Example Cafe
+  Security : WPA3_SAE
+}
