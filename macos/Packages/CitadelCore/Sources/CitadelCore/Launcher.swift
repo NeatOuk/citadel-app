@@ -60,9 +60,12 @@ public enum Launcher {
                 i += 1
             }
             if !script.isEmpty {
+                // as in the Python original, a relative script keeps the
+                // interpreter's name as its id (the right side is evaluated
+                // before `name` changes); policies store these ids
+                ident = script.hasPrefix("/") ? script : name
                 kind = "script"
                 name = (script as NSString).lastPathComponent
-                ident = script.hasPrefix("/") ? script : name
             }
         }
         if terminals.contains(p.comm) || terminals.contains(base) { kind = "terminal" }
