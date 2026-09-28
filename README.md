@@ -82,6 +82,35 @@ says so. To switch to the app, `omarchy plugin disable neat.citadel`; the
 service takes over within seconds, with the same policies. To switch back,
 enable the plugin again and the service steps aside.
 
+## Import from AdGuard, Pi-hole and hosts files
+
+**Policies → Import ▸** takes:
+- AdGuard / AdGuard Home rules
+- Pi-hole allow and deny lists
+- hosts files
+- plain domain lists
+- Citadel's own export
+
+Paste them, or fetch them from a URL (GitHub page links work).
+
+| Rule | Becomes |
+|---|---|
+| `\|\|ads.example.com^` (also with `$important`) | a Block policy |
+| `@@\|\|good.example.com^` | an Allow policy (wins over a block of the same domain, as in AdGuard) |
+| `0.0.0.0 ads.example.com` | a Block policy |
+| a plain domain | Block or Allow, as you choose (Pi-hole allowlists are plain lists) |
+
+Up to 200 blocked domains become policies you can see and edit. Bigger lists,
+like HaGeZi or OISD, become a **feed**. Fetched from a URL, the feed refreshes daily.
+
+Regex rules and AdGuard options such as `$client=` or `$dnsrewrite` have no
+Citadel equivalent. They're skipped, and the import tells you how many.
+
+**Not a DNS ad blocker.** Citadel blocks connections per app, so a listed
+domain is caught when Citadel knows the connection's host name, from its own
+name lookups or the app's request. Pi-hole and AdGuard Home block the DNS
+lookup itself. They work well together.
+
 ## Development
 
 ```bash
