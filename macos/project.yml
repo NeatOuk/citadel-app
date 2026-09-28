@@ -1,0 +1,49 @@
+# Xcode project for Citadel's macOS Network Extension (phase 2).
+# Generate with XcodeGen:  cd macos && xcodegen generate
+# Build unsigned (CI):      xcodebuild -project Citadel.xcodeproj -scheme CitadelHost CODE_SIGNING_ALLOWED=NO build
+# Signed builds need an Apple Developer team (DEVELOPMENT_TEAM) and profiles
+# with the Network Extension entitlements; see macos/README.md.
+name: Citadel
+options:
+  bundleIdPrefix: io.github.neatouk
+  deploymentTarget:
+    macOS: "15.0"
+  createIntermediateGroups: true
+packages:
+  CitadelCore:
+    path: Packages/CitadelCore
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    ENABLE_HARDENED_RUNTIME: YES
+targets:
+  CitadelHost:
+    type: application
+    platform: macOS
+    sources: [CitadelHost]
+    dependencies:
+      - package: CitadelCore
+      - target: CitadelFilter
+        embed: true
+        codeSign: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.neatouk.Citadel
+        PRODUCT_NAME: Citadel
+        INFOPLIST_FILE: CitadelHost/Info.plist
+        CODE_SIGN_ENTITLEMENTS: CitadelHost/CitadelHost.entitlements
+  CitadelFilter:
+    type: system-extension
+    platform: macOS
+    sources: [CitadelFilter]
+    dependencies:
+      - package: CitadelCore
+      - sdk: NetworkExtension.framework
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: io.github.neatouk.Citadel.Filter
+        PRODUCT_NAME: io.github.neatouk.Citadel.Filter
+        INFOPLIST_FILE: CitadelFilter/Info.plist
+        CODE_SIGN_ENTITLEMENTS: CitadelFilter/CitadelFilter.entitlements
