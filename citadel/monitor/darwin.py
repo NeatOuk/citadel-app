@@ -291,8 +291,17 @@ def classify_signature(codesign_out, verify_ok, spctl_out):
     return {"level": "unpackaged", "reason": "signed by %s, not notarized" % signer}
 
 
+_trust_pending = set()
+_trust_pool = None
+
+
 def trust(exe, deleted=False):
-    """level: verified | modified | unpackaged | suspicious | unknown (as on Linux)."""
+    """level: verified | modified | unpackaged | suspicious | unknown (as on Linux).
+
+    codesign + spctl can take a second or more per program, so the first
+    call for a program returns "checking" and the check runs in the
+    background; later ticks carry the result."""
+    global _trust_pool
     if not exe:
         return {"level": "unknown"}
     try:
@@ -302,6 +311,33 @@ def trust(exe, deleted=False):
         return {"level": "suspicious" if deleted else "unknown", "reason": "missing"}
     if key in trust_cache:
         return trust_cache[key]
+    if key not in _trust_pending:
+        _trust_pending.add(key)
+        if _trust_pool is None:
+            import concurrent.futures
+            _trust_pool = concurrent.futures.ThreadPoolExecutor(max_workers=2)
+        _trust_pool.submit(_check_trust, exe, key)
+    return {"level": "unknown", "reason": "checking the signature"}
+
+
+def trust_now(exe):
+    """The same check, synchronously (tests, selftest)."""
+    st = os.stat(exe)
+    key = (exe, st.st_ino, st.st_mtime_ns, st.st_size)
+    return trust_cache.get(key) or _check_trust(exe, key)
+
+
+def _check_trust(exe, key):
+    try:
+        t = _signature_level(exe)
+    except Exception as e:                                  # never let one program stop the checks
+        t = {"level": "unknown", "reason": str(e)[:80]}
+    trust_cache[key] = t
+    _trust_pending.discard(key)
+    return t
+
+
+def _signature_level(exe):
     if TMP_DIRS.match(exe):
         t = {"level": "suspicious", "reason": "runs from a temporary folder"}
     else:
@@ -322,7 +358,6 @@ def trust(exe, deleted=False):
         t["hash"] = sha256(exe)
     except OSError:
         t["hash"] = ""
-    trust_cache[key] = t
     return t
 
 

@@ -53,7 +53,7 @@ class Live(unittest.TestCase):
 
     def test_signatures_of_apple_programs(self):
         for exe in ("/usr/bin/curl", "/System/Applications/Calculator.app/Contents/MacOS/Calculator"):
-            t = D.trust(exe)
+            t = D.trust_now(exe)
             self.assertEqual((t["level"], t.get("pkg")), ("verified", "Apple"), exe)
 
     def test_totals_and_nettop(self):

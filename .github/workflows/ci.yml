@@ -44,9 +44,18 @@ jobs:
       - name: Daemon and CLI over the socket
         run: |
           python bin/citadel-daemon -v > daemon.log 2>&1 &
-          sleep 8
+          start=$(date +%s)
+          python -c "import socket,time; s=socket.create_connection(('1.1.1.1',443)); time.sleep(60)" &
+          for i in $(seq 1 30); do
+            sleep 1
+            n=$(python bin/citadel call state 2>/dev/null | python -c "import json,sys; print(json.load(sys.stdin)['ticks'])" 2>/dev/null || echo 0)
+            [ "${n:-0}" -gt 0 ] && break
+          done
+          echo "first tick after $(( $(date +%s) - start )) s"
+          sleep 6
           python bin/citadel status
-          python bin/citadel call state | python -c "import json,sys; d=json.load(sys.stdin); print('conns', len(d['conns']), 'apps', len(d['apps']), 'monitorUp', d['monitorUp'])"
+          python bin/citadel call state | python -c "import json,sys; d=json.load(sys.stdin); print('ticks', d['ticks'], 'conns', len(d['conns']), 'apps', len(d['apps']), 'monitorUp', d['monitorUp']); lv={}; [lv.__setitem__(a['trust'].get('level'), lv.get(a['trust'].get('level'),0)+1) for a in d['apps'].values()]; print('integrity levels', lv); print('to 1.1.1.1:', [c['app'] for c in d['conns'] if c['raddr']=='1.1.1.1'])"
+          test "$(python bin/citadel call state | python -c "import json,sys; print(len(json.load(sys.stdin)['apps']))")" -gt 0
           kill %1 || true
           cat daemon.log
       - name: Capture raw tool output
