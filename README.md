@@ -64,6 +64,8 @@ the same core, as a background service with its own window and tray icon.
 On macOS, watching and the gate work from a checkout today. Blocking and proxy
 routing are built and wait for signing; see [macos/](macos/README.md).
 
+**Every feature in detail, and its limits: [FEATURES.md](FEATURES.md).**
+
 ## How it fits together
 
 | Piece | What it does |
