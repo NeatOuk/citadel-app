@@ -9,9 +9,10 @@ LIBEXEC := $(DESTDIR)$(PREFIX)/lib/citadel/libexec
 all:
 
 install:
-	install -d $(SHARE)/citadel/platform $(SHARE)/app/qml/qs/Commons $(SHARE)/app/qml/qs/Ui $(SHARE)/app/qml/views $(LIBEXEC)
+	install -d $(SHARE)/citadel/monitor $(SHARE)/citadel/platform $(SHARE)/app/qml/qs/Commons $(SHARE)/app/qml/qs/Ui $(SHARE)/app/qml/views $(LIBEXEC)
 	install -m644 citadel/*.py $(SHARE)/citadel/
 	install -m644 citadel/platform/*.py $(SHARE)/citadel/platform/
+	install -m644 citadel/monitor/*.py $(SHARE)/citadel/monitor/
 	install -m644 app/citadel_app.py $(SHARE)/app/
 	install -m644 app/qml/*.qml app/qml/Model.js $(SHARE)/app/qml/
 	install -m644 app/qml/qs/Commons/* $(SHARE)/app/qml/qs/Commons/

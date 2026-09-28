@@ -1,13 +1,16 @@
-"""Integrity check backends of libexec/citadel-monitor, with fixture databases."""
+"""Integrity check backends of the Linux monitor (citadel.monitor.linux), with fixture databases."""
 import gzip
 import hashlib
 import os
 import runpy
+import sys
 import tempfile
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-G = runpy.run_path(os.path.join(HERE, "..", "libexec", "citadel-monitor"), run_name="monitor_under_test")
+sys.path.insert(0, os.path.dirname(HERE))
+from citadel.monitor import linux as _linux  # noqa: E402
+G = vars(_linux)
 
 
 class Integrity(unittest.TestCase):
