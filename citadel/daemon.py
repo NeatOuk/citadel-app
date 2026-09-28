@@ -89,6 +89,9 @@ class Paths:
         self.helper = os.environ.get("CITADEL_HELPER") or "/usr/lib/citadel/citadel-enforcer"
         self.pkexec = os.environ.get("CITADEL_PKEXEC", "pkexec")      # "" in tests: run the helper directly
         self.agent_file = os.environ.get("CITADEL_AGENT_FILE") or os.path.join(home, ".config/omarchy/defaults/agent")
+        # macOS: the host app (Citadel.app) plays citadel-helper's part, over a socket
+        self.host_socket = os.environ.get("CITADEL_HOST_SOCKET") or os.path.join(self.runtime_dir, "host.sock")
+        self.use_host = sys.platform == "darwin" or os.environ.get("CITADEL_HELPER_TRANSPORT") == "host"
 
 
 class Daemon:
@@ -135,6 +138,8 @@ class Daemon:
         self._helperStamp = ""
         self._notifications = {}        # alert key -> notify process
         self._tasks = []
+        from .platform.hostbridge import HostBridge
+        self.bridge = HostBridge(self.p.host_socket) if self.p.use_host else None
 
     # ------------------------------------------------------------ derived
     @property
@@ -466,6 +471,7 @@ class Daemon:
         self.alerts = [a for a in self.alerts if a["key"] != key]
         self.changed("alerts")
         self._close_notification(key)
+        self._resolve(alert.get("flows") or [], action == "allow")
         self._reevaluate()
         return True
 
@@ -634,6 +640,8 @@ class Daemon:
         for a in self.alerts:
             if a not in still:
                 self._close_notification(a["key"])
+                if a.get("flows"):                     # answered by a new policy or the mode
+                    self._resolve(a["flows"], M.decide(a["conn"], self.rules, ctx)["verdict"] == "allow")
         self.alerts = still
         self.changed("decisions", "groups", "totals", "alerts", "activeProfile")
         if self.enforce:
@@ -792,7 +800,7 @@ class Daemon:
         """Notice the helper being installed, upgraded or removed; verify its version."""
         n = 0
         while True:
-            installed = os.access(self.p.helper, os.X_OK)
+            installed = self.bridge.available() if self.bridge else os.access(self.p.helper, os.X_OK)
             if installed != self.helperInstalled:
                 self.helperInstalled = installed
                 if not installed:
@@ -800,7 +808,7 @@ class Daemon:
                 self.changed("helperInstalled", "helperVersion")
                 if installed:
                     self.verifyHelper()
-            if installed:
+            if installed and not self.bridge:
                 try:
                     st = os.stat(self.p.helper)
                     stamp = "%d %d" % (st.st_mtime, st.st_size)
@@ -858,18 +866,81 @@ class Daemon:
     async def _helper_loop(self):
         while True:
             args, done = await self._jobs.get()
-            cmd = ([self.p.pkexec] if self.p.pkexec else []) + [self.p.helper] + list(args)
-            try:
-                proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-                out, err = await proc.communicate()
-                code = proc.returncode
-            except OSError as e:
-                code, out, err = 127, b"", str(e).encode()
+            if self.bridge:
+                code, out, err = await self._host_call(args)
+                out, err = out.encode(), err.encode()
+            else:
+                cmd = ([self.p.pkexec] if self.p.pkexec else []) + [self.p.helper] + list(args)
+                try:
+                    proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+                    out, err = await proc.communicate()
+                    code = proc.returncode
+                except OSError as e:
+                    code, out, err = 127, b"", str(e).encode()
             if done:
                 try:
                     done(code, out.decode(errors="replace"), err.decode(errors="replace"))
                 except Exception:
                     log.exception("helper callback failed")
+
+    async def _host_call(self, args):
+        """A helper call through the macOS host app: file arguments travel as JSON."""
+        from .platform.hostbridge import file_payload
+        cmd, rest = args[0], list(args[1:])
+        try:
+            if cmd in ("apply", "kill") and rest:
+                payload = {"spec" if cmd == "apply" else "targets": file_payload(rest[0])}
+            elif cmd == "resolve" and rest:
+                payload = json.loads(rest[0])
+            else:
+                payload = {}
+        except (OSError, ValueError) as e:
+            return 1, "", "bad %s request: %s" % (cmd, e)
+        return await self.bridge.request(cmd, payload)
+
+    # ------------------------------------------------------------ the gate on macOS (paused flows)
+    def _on_host_event(self, ev):
+        """A new connection the network extension paused until the gate answers."""
+        if ev.get("type") != "flow" or not ev.get("id") or self.pluginActive:
+            return
+        import ipaddress
+        raddr = str(ev.get("raddr") or "")
+        try:
+            a = ipaddress.ip_address(raddr)
+            scope = "loopback" if a.is_loopback else "lan" if a.is_private or a.is_link_local else "internet"
+        except ValueError:
+            scope = "other"
+        exe = str(ev.get("exe") or "")
+        conn = {"key": "flow|" + str(ev["id"]), "flowId": str(ev["id"]), "proto": str(ev.get("proto") or "tcp"),
+                "state": "connecting", "raddr": raddr, "rport": int(ev.get("rport") or 0), "lport": 0,
+                "pid": int(ev.get("pid") or 0), "exe": exe, "app": os.path.basename(exe) or "unknown",
+                "cgroup": "", "system": False, "scope": scope, "host": str(ev.get("host") or ""),
+                "cc": "", "org": "", "up": 0, "down": 0, "upRate": 0, "downRate": 0, "new": True, "list": "",
+                "via": "", "viaId": "", "viaKind": "", "cmd": "", "chain": [], "unit": "", "paused": True}
+        live = next((c for c in self.conns if c.get("pid") == conn["pid"] and c.get("raddr") == raddr), None)
+        if live:                                  # the monitor may already know more (launcher, command, country)
+            for k in ("via", "viaId", "viaKind", "cmd", "chain", "cc", "org", "host"):
+                conn[k] = live.get(k) or conn[k]
+        d = M.decide(conn, self.rules, self._ctx())
+        if d["verdict"] != "prompt":
+            self._resolve([conn["flowId"]], d["verdict"] == "allow")
+            return
+        key = M.alert_key(conn)
+        existing = next((a for a in self.alerts if a["key"] == key), None)
+        if existing:
+            existing.setdefault("flows", []).append(conn["flowId"])
+            return
+        alerts = list(self.alerts)
+        self._queue_alert(alerts, conn, d)
+        for a in alerts:
+            if a["key"] == key:
+                a["flows"] = [conn["flowId"]]
+        self.alerts = alerts
+        self.changed("alerts")
+
+    def _resolve(self, flow_ids, allow):
+        if self.bridge and flow_ids:
+            self._run(["resolve", json.dumps({"flows": list(flow_ids), "allow": bool(allow)})])
 
     def _sync_enforcement(self, force=False):
         if force:
@@ -886,6 +957,10 @@ class Daemon:
         if not self.enforce or not self.helperUsable or self.uid < 0 or self.pluginActive:
             return
         ctx = self._ctx()
+        if self.bridge:
+            spec = M.build_spec_darwin(self.rules, ctx, self.prefs, self.defaultRoute, self.proxies)
+            self._apply_text(json.dumps(spec, separators=(",", ":")), None)
+            return
         res = M.build_spec(self.rules, ctx, self.conns, self.apps, self.ipCidrs, self.uid)
         res["spec"]["logNew"] = self.prefs.get("catchShort") is not False
         routes = M.compile_routes(self.rules, self.defaultRoute, self.proxies, ctx, self.conns, self.apps, self.uid)
@@ -908,14 +983,17 @@ class Daemon:
             self.proxyError = ""
         self.approx = res["approx"]
         self.changed("approx", "proxyError")
-        text = json.dumps(res["spec"], separators=(",", ":"))
+        self._apply_text(json.dumps(res["spec"], separators=(",", ":")), res["spec"].get("proxy"))
+
+    def _apply_text(self, text, routes):
+        """Write the spec and have the helper (or the macOS host) apply it."""
         if text == self._lastSpec and not self._forceSync:
             return
         self._forceSync = False
         self._lastSpec = text
         self._lastSyncAt = _now()
         self.enforceBusy = True
-        self._pendingRoutes = res["spec"].get("proxy")
+        self._pendingRoutes = routes
         self.changed("enforceBusy")
         try:
             P.write_atomic(self.p.spec, text + "\n")
@@ -935,8 +1013,9 @@ class Daemon:
             else:
                 self.enforceActive = False
                 self._lastSpec = ""
-                self.enforceError = self._auth_help() if code in (126, 127) else (err or out or "helper exit %s" % code).strip()[:400]
-                if code in (126, 127):
+                auth = code in (126, 127) and not self.bridge          # pkexec refused (Linux)
+                self.enforceError = self._auth_help() if auth else (err or out or "helper exit %s" % code).strip()[:400]
+                if auth:
                     self.enforce = False
                     self.changed("enforce")
                     self.save()
@@ -1264,7 +1343,8 @@ class Daemon:
         self._load()
         loop = asyncio.get_running_loop()
         for coro in (self._flush_loop(), self._clock_loop(), self._run_monitor(), self._run_proxy(), self._helper_loop(),
-                     self._helper_watch(), self._explain_loop(), self._agents_watch(), self._plugin_watch()):
+                     self._helper_watch(), self._explain_loop(), self._agents_watch(), self._plugin_watch()) + \
+                ((self.bridge.events(self._on_host_event),) if self.bridge else ()):
             self._tasks.append(loop.create_task(coro))
 
     async def stop(self):

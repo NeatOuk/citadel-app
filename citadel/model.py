@@ -459,6 +459,20 @@ def build_spec(rules, ctx, conns, apps, blocklist_cidrs, uid):
             "approx": approx}
 
 
+def build_spec_darwin(rules, ctx, prefs, default_route="direct", proxies=None):
+    """The spec for the macOS network extension. It decides each new
+    connection itself with CitadelCore (the Swift port of this module), so it
+    gets the policies and the context rather than compiled cgroup/IP rules."""
+    p = prefs or {}
+    return {"format": "citadel-macos-1",
+            "rules": list(rules or []),               # CitadelCore applies zones and until-quit itself
+            "ctx": {"profile": ctx.get("profile"), "mode": ctx.get("mode"), "resolved": ctx.get("resolved") or {},
+                    "session": ctx.get("session") or {}, "alivePids": ctx.get("alivePids") or {}},
+            "gate": {"default": "deny" if p.get("alertDefault") == "deny" else "allow",
+                     "timeout": float(p.get("alertTimeout") or 90)},
+            "defaultRoute": default_route or "direct", "proxies": proxies or []}
+
+
 # ------------------------------------------------------------------ proxy routes
 
 DEAD_PORT = 47000
