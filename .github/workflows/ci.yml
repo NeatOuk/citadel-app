@@ -78,6 +78,7 @@ jobs:
       - name: Build the host app and system extension (unsigned)
         working-directory: macos
         run: |
+          set -o pipefail
           brew install xcodegen
           xcodegen generate
           xcodebuild -project Citadel.xcodeproj -scheme CitadelHost -configuration Debug \
