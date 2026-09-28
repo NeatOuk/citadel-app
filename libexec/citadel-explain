@@ -28,7 +28,8 @@ import time
 
 HOME = os.path.expanduser("~")
 AGENT_FILE = os.environ.get("CITADEL_AGENT_FILE") or os.path.join(HOME, ".config/omarchy/defaults/agent")
-CACHE_DB = os.environ.get("CITADEL_EXPLAIN_DB") or os.path.join(HOME, ".local/share/citadel/history.db")
+CACHE_DB = os.environ.get("CITADEL_EXPLAIN_DB") or os.path.join(
+    os.environ.get("CITADEL_STATE_DIR") or os.path.join(HOME, ".local/share/citadel"), "history.db")
 HELP_CACHE = os.path.join(HOME, ".cache/citadel/agent-help.json")
 TIMEOUT = 120
 CACHE_DAYS = 30
@@ -75,6 +76,11 @@ def out(obj):
 
 
 # ------------------------------------------------------------------ agent
+
+def installed_agents():
+    """Supported agent CLIs found on PATH, in the adapter table's order."""
+    return [name for name, spec in ADAPTERS.items() if which(spec[0])]
+
 
 def default_agent():
     try:
@@ -137,10 +143,10 @@ def command_for(prefs, prompt):
             argv.append(prompt)
         exe = which(argv[0]) or argv[0]
         return [exe] + argv[1:], "custom command", "", "text"
-    agent = default_agent()
+    agent = (prefs.get("explainAgent") or "").strip() or default_agent() or (installed_agents() or [""])[0]
     if not agent:
-        raise LookupError("no-agent", "No Omarchy default agent is set. Pick one with `omarchy agent --pick`, "
-                                      "or set a custom Explain command in Settings.")
+        raise LookupError("no-agent", "No AI agent found. Install one (e.g. claude, codex, gemini, pi), pick it in "
+                                      "Settings, or set a custom Explain command.")
     if agent not in ADAPTERS:
         raise LookupError("unsupported", "Explain isn't available for %s yet. Set a custom Explain command in Settings." % agent)
     binary, build, needed, model_flag, parser = ADAPTERS[agent]
@@ -291,6 +297,9 @@ TEST_CONN = {"app": "curl", "exe": "/usr/bin/curl", "host": "ad.doubleclick.net"
 
 
 def main():
+    if sys.argv[1:] == ["--list-agents"]:
+        out({"agents": installed_agents(), "default": default_agent()})
+        return 0
     try:
         req = json.loads(sys.stdin.read() or "{}")
     except ValueError:

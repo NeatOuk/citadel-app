@@ -34,7 +34,7 @@ import time
 import urllib.request
 
 HOME = os.path.expanduser("~")
-STATE = os.path.join(HOME, ".local/share/citadel")
+STATE = os.environ.get("CITADEL_STATE_DIR") or os.path.join(HOME, ".local/share/citadel")
 LISTS_DIR = os.path.join(STATE, "lists")
 GEO_DIR = os.path.join(STATE, "geo")
 GEO_DB = os.path.join(GEO_DIR, "dbip-country-lite.mmdb")
