@@ -10,6 +10,8 @@ import Foundation
     func status(withReply reply: @escaping (Data) -> Void)
     /// Resume paused flows: allowed or dropped.
     func resolve(_ flowIDs: [String], allow: Bool)
+    /// Threat feeds: {"feeds": [{id, kind, entries}]}.
+    func setFeeds(_ feeds: Data, withReply reply: @escaping (Bool) -> Void)
     /// Stop filtering: forget the spec, let paused flows through.
     func off(withReply reply: @escaping (Bool) -> Void)
 }

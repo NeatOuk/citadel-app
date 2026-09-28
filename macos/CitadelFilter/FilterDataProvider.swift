@@ -52,6 +52,7 @@ final class FilterDataProvider: NEFilterDataProvider {
         let app = AppIdentity(token: flow.sourceAppAuditToken)
         conn.exe = app.path
         conn.app = (app.path as NSString).lastPathComponent
+        conn.list = store.feeds().match(host: conn.host, ip: conn.raddr)
         let d = decide(conn, spec.rules, spec.context)
         switch d.verdict {
         case "deny":
@@ -115,9 +116,12 @@ struct AppIdentity {
 final class PolicyStore {
     private let lock = NSLock()
     private var spec: Spec?
+    private var blocklist = Blocklist()
 
     func current() -> Spec? { lock.lock(); defer { lock.unlock() }; return spec }
     func set(_ s: Spec?) { lock.lock(); spec = s; lock.unlock() }
+    func feeds() -> Blocklist { lock.lock(); defer { lock.unlock() }; return blocklist }
+    func setFeeds(_ b: Blocklist) { lock.lock(); blocklist = b; lock.unlock() }
 }
 
 /// The extension's XPC service for the host app.
@@ -179,6 +183,12 @@ final class FilterService: NSObject, NSXPCListenerDelegate, FilterXPC {
 
     func resolve(_ flowIDs: [String], allow: Bool) {
         FilterDataProvider.current?.resolve(flowIDs, allow: allow)
+    }
+
+    func setFeeds(_ feeds: Data, withReply reply: @escaping (Bool) -> Void) {
+        guard let b = Blocklist(data: feeds) else { reply(false); return }
+        FilterDataProvider.current?.store.setFeeds(b)
+        reply(true)
     }
 
     func off(withReply reply: @escaping (Bool) -> Void) {

@@ -54,7 +54,35 @@ def build():
     return {"groups": groups,
             "netContains": [{"net": n, "ip": i, "want": M.net_contains(n, i)} for n, i in nets],
             "normHost": [{"in": h, "want": M.norm_host(h)} for h in hosts],
-            "normPort": [{"in": p, "want": M.norm_port(p)} for p in ports]}
+            "normPort": [{"in": p, "want": M.norm_port(p)} for p in ports],
+            "blocklist": blocklist_cases()}
+
+
+def blocklist_cases():
+    """Feeds + lookups answered by the Linux monitor's own list_match."""
+    import ipaddress
+    from citadel.monitor import common as C
+    feeds = [{"id": "firehol", "kind": "ip", "entries": ["5.188.10.0/23", "203.0.113.0/24", "2001:db8:bad::/48", "198.51.100.7"]},
+             {"id": "spamhaus", "kind": "ip", "entries": ["203.0.113.128/25", "0.0.0.0/0"][:1]},
+             {"id": "stevenblack", "kind": "domain", "entries": ["ads.example.com", "doubleclick.net", "tracker.io"]},
+             {"id": "hagezi", "kind": "domain", "entries": ["example.com", "metrics.example.org"]}]
+    nets = {}
+    for f in feeds:
+        if f["kind"] != "ip":
+            continue
+        by_len = {}
+        for c in f["entries"]:
+            n = ipaddress.ip_network(c, strict=False)
+            by_len.setdefault((n.version, n.prefixlen), set()).add(int(n.network_address))
+        nets[f["id"]] = by_len
+    C.lists_state["nets"] = nets
+    C.lists_state["domains"] = {f["id"]: set(f["entries"]) for f in feeds if f["kind"] == "domain"}
+    C.ip_match_cache.clear()
+    queries = [("", "5.188.11.9"), ("", "5.188.12.1"), ("", "203.0.113.200"), ("", "198.51.100.7"), ("", "198.51.100.8"),
+               ("", "2001:db8:bad:1::5"), ("", "2001:db8:bee::1"), ("x.ads.example.com", "1.1.1.1"),
+               ("ads.example.com.", ""), ("example.com", ""), ("www.example.com", ""), ("com", ""), ("tracker.io", "9.9.9.9"),
+               ("metrics.example.org", ""), ("example.org", ""), ("Doubleclick.NET", ""), ("", ""), ("fine.example.net", "8.8.8.8")]
+    return {"feeds": feeds, "queries": [{"host": h, "ip": ip, "want": C.list_match(h, ip)} for h, ip in queries]}
 
 
 def text():

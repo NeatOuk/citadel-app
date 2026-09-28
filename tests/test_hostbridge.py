@@ -145,6 +145,19 @@ class HostBridgeTest(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await self.wait(lambda: self.host.of("resolve")))
         self.assertEqual(self.host.of("resolve")[0]["args"], {"flows": ["F4"], "allow": True})
 
+    async def test_feeds_go_to_the_extension_once(self):
+        r = await self.c.call("importFeed", "Imported (2)", ["ads.example.com", "tracker.example"], "")
+        self.assertTrue(r["ok"])
+        await self.c.call("setMode", "guarded", 0)            # a sync
+        self.assertTrue(await self.wait(lambda: self.host.of("feeds"), 8))
+        feeds = self.host.of("feeds")[-1]["args"]["feeds"]
+        mine = [f for f in feeds if f["id"] == r["result"]]
+        self.assertEqual(mine[0]["entries"], ["ads.example.com", "tracker.example"])
+        n = len(self.host.of("feeds"))
+        await self.c.call("setMode", "guarded", 0)
+        await asyncio.sleep(1.5)
+        self.assertEqual(len(self.host.of("feeds")), n, "unchanged feeds are not sent again")
+
     async def test_off_goes_to_the_host(self):
         await self.c.call("setEnforce", False)
         self.assertTrue(await self.wait(lambda: self.host.of("off")))

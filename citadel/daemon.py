@@ -833,6 +833,9 @@ class Daemon:
             except ValueError:
                 s = {}
             self.helperVersion = (s.get("version") or "1.1.0") if code == 0 else ""
+            if code == 0 and self.bridge:
+                self._feedsSig = None              # a restarted host/extension lost what it had: send again
+                self._lastSpec = ""
             if code == 0:
                 self.enforceActive = bool(s.get("active"))
                 self.enforceDrops = int(s.get("drops") or 0)
@@ -891,7 +894,7 @@ class Daemon:
         try:
             if cmd in ("apply", "kill") and rest:
                 payload = {"spec" if cmd == "apply" else "targets": file_payload(rest[0])}
-            elif cmd == "resolve" and rest:
+            elif cmd in ("resolve", "feeds", "notify") and rest:
                 payload = json.loads(rest[0])
             else:
                 payload = {}
@@ -939,6 +942,33 @@ class Daemon:
         self.alerts = alerts
         self.changed("alerts")
 
+    def _send_feeds(self):
+        """macOS: hand the enabled threat feeds to the extension when they change.
+        Parsed like the monitor does; big lists travel once, not with every spec."""
+        from .monitor.common import parse_list
+        wanted = []
+        for l in self.lists:
+            if not l.get("enabled"):
+                continue
+            path = os.path.join(self.p.state_dir, "lists", re.sub(r"[^A-Za-z0-9_.-]", "_", str(l["id"])) + ".txt")
+            try:
+                st = os.stat(path)
+            except OSError:
+                continue
+            wanted.append((str(l["id"]), "ip" if l.get("kind") == "ip" else "domain", path, st.st_mtime_ns, st.st_size))
+        sig = tuple(wanted)
+        if sig == getattr(self, "_feedsSig", None):
+            return
+        feeds = []
+        for lid, kind, path, _, _ in wanted:
+            try:
+                with open(path, errors="replace") as f:
+                    feeds.append({"id": lid, "kind": kind, "entries": sorted(parse_list(kind, f.read()))})
+            except OSError:
+                continue
+        self._feedsSig = sig
+        self._run(["feeds", json.dumps({"feeds": feeds}, separators=(",", ":"))])
+
     def _resolve(self, flow_ids, allow):
         if self.bridge and flow_ids:
             self._run(["resolve", json.dumps({"flows": list(flow_ids), "allow": bool(allow)})])
@@ -959,6 +989,7 @@ class Daemon:
             return
         ctx = self._ctx()
         if self.bridge:
+            self._send_feeds()                    # only when the feed files changed
             spec = M.build_spec_darwin(self.rules, ctx, self.prefs, self.defaultRoute, self.proxies)
             self._apply_text(json.dumps(spec, separators=(",", ":")), None)
             return

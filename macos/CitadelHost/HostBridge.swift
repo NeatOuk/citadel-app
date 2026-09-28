@@ -92,6 +92,9 @@ final class HostBridge: NSObject, HostXPC {
             guard let spec = args["spec"], let data = try? JSONSerialization.data(withJSONObject: spec) else { done(1, "", "no spec"); return }
             ExtensionController.shared.setFilter(enabled: true)
             f.apply(data) { ok, err in done(ok ? 0 : 1, "", err) }
+        case "feeds":
+            guard let data = try? JSONSerialization.data(withJSONObject: args) else { done(1, "", "bad feeds"); return }
+            f.setFeeds(data) { ok in done(ok ? 0 : 1) }
         case "resolve":
             let ids = args["flows"] as? [String] ?? []
             f.resolve(ids, allow: (args["allow"] as? Bool) ?? true)
