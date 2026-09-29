@@ -7,6 +7,7 @@ import UserNotifications
 final class GateNotifications: NSObject, UNUserNotificationCenterDelegate {
     static let shared = GateNotifications()
     static let category = "citadel.gate"
+    static let updateCategory = "citadel.update"      // an app updated to a new path: keep its policies?
     private let center = UNUserNotificationCenter.current()
 
     func start() {
@@ -14,19 +15,26 @@ final class GateNotifications: NSObject, UNUserNotificationCenterDelegate {
         let actions = [
             UNNotificationAction(identifier: "once", title: "Allow once"),
             UNNotificationAction(identifier: "always", title: "Always allow"),
+            UNNotificationAction(identifier: "app", title: "Allow the app"),
             UNNotificationAction(identifier: "block", title: "Block", options: [.destructive]),
         ]
-        center.setNotificationCategories([UNNotificationCategory(identifier: Self.category, actions: actions,
-                                                                 intentIdentifiers: [])])
+        let update = [
+            UNNotificationAction(identifier: "keep", title: "Keep its policies"),
+            UNNotificationAction(identifier: "new", title: "Ask as a new app"),
+        ]
+        center.setNotificationCategories([
+            UNNotificationCategory(identifier: Self.category, actions: actions, intentIdentifiers: []),
+            UNNotificationCategory(identifier: Self.updateCategory, actions: update, intentIdentifiers: []),
+        ])
         center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
     }
 
-    /// Post (or replace) the notification for a gate request.
-    func post(key: String, title: String, body: String) {
+    /// Post (or replace) the notification for an app's waiting gate requests.
+    func post(key: String, title: String, body: String, updated: Bool = false) {
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body
-        content.categoryIdentifier = Self.category
+        content.categoryIdentifier = updated ? Self.updateCategory : Self.category
         content.userInfo = ["key": key]
         center.add(UNNotificationRequest(identifier: key, content: content, trigger: nil))
     }
@@ -43,7 +51,7 @@ final class GateNotifications: NSObject, UNUserNotificationCenterDelegate {
         let key = response.notification.request.content.userInfo["key"] as? String ?? ""
         let choice: String
         switch response.actionIdentifier {
-        case "once", "always", "block": choice = response.actionIdentifier
+        case "once", "always", "app", "block", "keep", "new": choice = response.actionIdentifier
         default: choice = "open"                       // clicked the notification itself
         }
         HostBridge.shared.sendEvent(["type": "answer", "key": key, "choice": choice])

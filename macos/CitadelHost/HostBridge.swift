@@ -90,7 +90,8 @@ final class HostBridge: NSObject, HostXPC {
                 GateNotifications.shared.remove(key: key)
             } else {
                 GateNotifications.shared.post(key: key, title: args["title"] as? String ?? "At the gate",
-                                              body: args["body"] as? String ?? "")
+                                              body: args["body"] as? String ?? "",
+                                              updated: args["kind"] as? String == "update")
             }
             done(0)
             return

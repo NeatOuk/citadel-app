@@ -94,6 +94,10 @@ def cases(seed):
         out.append(("decide", "decide", [c, rules, ctx]))
         out.append(("routeFor", "route_for", [c, rules, ctx, dr, PROXIES]))
         out.append(("alertKey", "alert_key", [c]))
+    fam_rules = [M.make_rule({"id": "f%d" % i, "app": rnd.choice(FAMILY_PATHS[:9] + ["*"]), "createdAt": rnd.randint(1, 5)})
+                 for i in range(rnd.randint(0, 5))] + rules
+    for exe in rnd.sample(FAMILY_PATHS[:9], 3):
+        out.append(("updatedFrom", "updated_from", [exe, fam_rules]))
     a = M.compile_routes(rules[: len(rules) // 2], dr, PROXIES, ctx, conns, apps, UID)
     b = M.compile_routes(rules, dr, PROXIES, ctx, conns, apps, UID)
     out.append(("routeCutTargets", "route_cut_targets", [a, b, conns, UID]))
@@ -111,6 +115,14 @@ SCALARS = [("netContains", "net_contains", ["10.0.0.0/8", "10.9.9.9"]), ("netCon
            ("activeProfile", "active_profile", [[{"name": "Home", "networks": ["wifi"]}, {"name": "Work", "networks": ["corp"]}], "", ["corp"]]),
            ("activeProfile", "active_profile", [[{"name": "Home", "networks": []}], "Nope", []]),
            ("freeListenPort", "free_listen_port", [PROXIES])]
+FAMILY_PATHS = ["/home/u/.local/share/mise/installs/claude/2.1.281/claude", "/home/u/.local/share/mise/installs/claude/2.1.283/claude",
+                "/home/u/.local/share/mise/installs/node/26.8.2/bin/node", "/home/u/.nvm/versions/node/v20.11.0/bin/node",
+                "/home/u/.nvm/versions/node/v22.1.0-rc.1/bin/node", "/home/u/.asdf/installs/python/3.12.1/bin/python3.12",
+                "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-claude-code-2.1.283/bin/claude",
+                "/nix/store/zyxwvsrqpnmlkjihgfdcba9876543210-claude-code-2.1.290/bin/claude",
+                "/nix/store/0123456789abcdfghijklmnpqrsvwxyz-hello/bin/hello", "/usr/bin/python3.14", "/opt/app/1.2/bin/app",
+                "/opt/app/1/bin/app", "relative/1.2.3/x", "", None, "/usr/lib/jvm/java-17-openjdk/bin/java", "/a/1.2.3.4.5/b"]
+SCALARS += [("appFamily", "app_family", [p]) for p in FAMILY_PATHS]
 
 
 def py_call(name, args):

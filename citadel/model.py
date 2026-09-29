@@ -301,6 +301,44 @@ def rule_from_alert(alert, action, scope, duration, profile, app_info, via_scope
     })
 
 
+# Apps that install each version to its own path (mise, asdf, nvm, Nix, ...):
+# the path with its version parts replaced, or "" when it has none. Two paths
+# of one family are the same app before and after an update.
+VERSION_PART = re.compile(r"v?[0-9]+(\.[0-9]+)+([-+_~][0-9A-Za-z.+_~-]*)?")
+NIX_STORE_PART = re.compile(r"[0-9a-z]{32}-(.+?)(-[0-9][0-9A-Za-z.+_~-]*)?")
+
+
+def app_family(exe):
+    if not exe or not str(exe).startswith("/"):
+        return ""
+    parts, changed = str(exe).split("/"), False
+    for i, part in enumerate(parts):
+        if VERSION_PART.fullmatch(part):
+            parts[i] = "*"
+            changed = True
+        elif i == 3 and parts[1] == "nix" and parts[2] == "store":
+            m = NIX_STORE_PART.fullmatch(part)
+            if m:
+                parts[i] = "nix:" + m.group(1)
+                changed = True
+    return "/".join(parts) if changed else ""
+
+
+def updated_from(exe, rules):
+    """The older path whose policies an updated app can keep: the newest
+    policy's app of the same family, when this exact path has no policy yet."""
+    fam = app_family(exe)
+    if not fam:
+        return ""
+    best = None
+    for r in rules or []:
+        if r["app"] == exe:
+            return ""
+        if r.get("app") and r["app"] != "*" and app_family(r["app"]) == fam and (not best or r["createdAt"] > best["createdAt"]):
+            best = r
+    return best["app"] if best else ""
+
+
 # ------------------------------------------------------------------ nft spec
 
 def _key(x):

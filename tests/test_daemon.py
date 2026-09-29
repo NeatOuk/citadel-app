@@ -9,6 +9,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -221,6 +222,78 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
             self.assertIn("security bug", self.c.state.get("enforceError", ""))
         finally:
             os.environ.pop("FAKE_HELPER_VERSION", None)
+
+    OLD = "/home/u/.local/share/mise/installs/claude/2.1.281/claude"
+    NEW = "/home/u/.local/share/mise/installs/claude/2.1.283/claude"
+
+    async def _updated_app_waits(self):
+        self.d.prefs["notify"] = False
+        await self.c.call("addRule", {"app": self.OLD, "action": "allow"})
+        await self.c.call("addRule", {"app": self.OLD, "host": "bad.example", "action": "deny"})
+        self.feed(tick([]))
+        self.assertTrue(await self.c.wait_for(lambda s: s.get("ticks", 0) >= 1))
+        self.feed(tick([conn("k1", self.NEW, "1.1.1.1"), conn("k2", self.NEW, "2.2.2.2", host="api.example")], ts=time.time()))
+        self.assertTrue(await self.c.wait_for(lambda s: len(s.get("alerts", [])) >= 1))
+        await asyncio.sleep(0.3)
+        self.assertEqual(len(self.c.state["alerts"]), 1, "one request for the update, not one per connection")
+        a = self.c.state["alerts"][0]
+        self.assertEqual((a["key"], a["updatedFrom"], a["policies"]), ("update|" + self.NEW, self.OLD, 2))
+        return a
+
+    async def test_updated_app_keeps_its_policies(self):
+        a = await self._updated_app_waits()
+        self.assertTrue((await self.c.call("answer", a["key"], "keep"))["result"])
+        self.assertTrue(await self.c.wait_for(lambda s: s["alerts"] == [] and s["decisions"].get("k1", {}).get("verdict") == "allow"))
+        self.assertEqual(sorted((r["app"], r["host"]) for r in self.c.state["rules"]),
+                         [(self.NEW, "*"), (self.NEW, "bad.example")])
+
+    async def test_updated_app_can_be_treated_as_new(self):
+        a = await self._updated_app_waits()
+        await self.c.call("answer", a["key"], "new")
+        self.assertTrue(await self.c.wait_for(lambda s: len(s["alerts"]) == 2))
+        self.assertFalse([x for x in self.c.state["alerts"] if x.get("updatedFrom")])
+        self.assertEqual({r["app"] for r in self.c.state["rules"]}, {self.OLD}, "the old version keeps its policies")
+
+    async def test_one_notification_per_app_and_its_buttons_answer_all(self):
+        from citadel import platform as P
+        posted = []
+
+        class FakeProc:
+            returncode = None
+
+            def __init__(self):
+                self.done = asyncio.get_running_loop().create_future()
+                self.stdout = self
+
+            async def read(self):
+                return await self.done
+
+            def terminate(self):
+                self.returncode = 0
+                if not self.done.done():
+                    self.done.set_result(b"")
+
+        async def fake_notify(title, body, actions):
+            posted.append({"title": title, "body": body, "actions": [a for a, _ in actions], "proc": FakeProc()})
+            return posted[-1]["proc"]
+        saved = P.notify
+        P.notify = fake_notify
+        try:
+            self.feed(tick([]))
+            self.assertTrue(await self.c.wait_for(lambda s: s.get("ticks", 0) >= 1))
+            self.feed(tick([conn("k1", "/usr/bin/curl", "1.1.1.1"), conn("k2", "/usr/bin/curl", "2.2.2.2"),
+                            conn("k3", "/usr/bin/curl", "3.3.3.3", host="three.example")], ts=time.time()))
+            self.assertTrue(await self.c.wait_for(lambda s: len(s.get("alerts", [])) == 3))
+            await asyncio.sleep(0.8)
+            self.assertEqual(len(posted), 1, "one notification for the burst")
+            self.assertIn("and 1 more", posted[0]["body"])
+            self.assertIn("app", posted[0]["actions"])
+            posted[0]["proc"].done.set_result(b"app\n")                    # "Allow the app"
+            self.assertTrue(await self.c.wait_for(lambda s: s["alerts"] == []))
+            self.assertEqual([(r["app"], r["host"], r["action"]) for r in self.c.state["rules"]],
+                             [("/usr/bin/curl", "*", "allow")])
+        finally:
+            P.notify = saved
 
     async def test_block_answer_cuts_live_connections(self):
         self.d.prefs["notify"] = False

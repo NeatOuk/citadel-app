@@ -137,7 +137,9 @@ class Daemon:
         self._listeners = []            # callables(event dict)
         self._saveHandle = None
         self._helperStamp = ""
-        self._notifications = {}        # alert key -> notify process
+        self._notifications = {}        # notification key -> notify process
+        self._notePending = set()       # notification keys about to be (re)posted
+        self._newApps = set()           # updated apps you chose to treat as new (this session)
         self._tasks = []
         from .platform.hostbridge import HostBridge
         self.bridge = HostBridge(self.p.host_socket) if self.p.use_host else None
@@ -360,11 +362,7 @@ class Daemon:
                 # Citadel's proxy tunnels carry traffic that was already decided
                 dec[c["key"]] = {"verdict": "allow", "source": "citadel", "rule": None}
                 continue
-            d = M.decide(c, self.rules, ctx)
-            if d["source"] == "rule" and d["verdict"] == "allow" and d["rule"].get("exeHash") and c.get("exe") and self.apps.get(c["exe"]):
-                h = (self.apps[c["exe"]].get("trust") or {}).get("hash")
-                if h and h != d["rule"]["exeHash"]:
-                    d = {"verdict": "prompt", "source": "changed", "rule": d["rule"]}
+            d = self._decide(c, ctx)
             dec[c["key"]] = d
             up += c.get("upRate") or 0
             down += c.get("downRate") or 0
@@ -385,7 +383,7 @@ class Daemon:
             for sc in shorts:
                 if self._is_own(sc):
                     continue
-                sd = M.decide(sc, self.rules, ctx)
+                sd = self._decide(sc, ctx)
                 recent.append({"conn": sc, "decision": sd})
                 if first:
                     continue
@@ -419,6 +417,22 @@ class Daemon:
         if self.enforce:
             self._sync_enforcement(first)
 
+    def _decide(self, c, ctx):
+        """M.decide, plus two gate cases: an allowed program that changed since
+        (same path, new checksum), and an app that updated to a new path (mise,
+        asdf, nvm, Nix …) while its policies are still on the old one."""
+        d = M.decide(c, self.rules, ctx)
+        exe = c.get("exe")
+        if d["source"] == "rule" and d["verdict"] == "allow" and d["rule"].get("exeHash") and exe and self.apps.get(exe):
+            h = (self.apps[exe].get("trust") or {}).get("hash")
+            if h and h != d["rule"]["exeHash"]:
+                d = {"verdict": "prompt", "source": "changed", "rule": d["rule"]}
+        elif d["verdict"] == "prompt" and d["source"] == "none" and exe and exe not in self._newApps:
+            old = M.updated_from(exe, self.rules)
+            if old:
+                d = {"verdict": "prompt", "source": "updated", "rule": None, "from": old}
+        return d
+
     def _is_own(self, c):
         """A connection of Citadel's own proxy process (its upstream tunnels)."""
         return c.get("app") == "Citadel proxy" or bool(re.search(r"/citadel-proxy(\s|$)", c.get("cmd") or ""))
@@ -429,22 +443,60 @@ class Daemon:
         return "open mode" if self.mode == "open" else "lockdown"
 
     # ------------------------------------------------------------ alerts
+    @staticmethod
+    def _alert_key(conn, d):
+        """One request per destination; an updated app asks once for all of them."""
+        return "update|" + conn["exe"] if d.get("source") == "updated" else M.alert_key(conn)
+
     def _queue_alert(self, queue, conn, d):
-        key = M.alert_key(conn)
+        key = self._alert_key(conn, d)
         if any(a["key"] == key for a in queue):
             return
         info = self.apps.get(conn.get("exe")) if conn.get("exe") else None
         alert = {"key": key, "conn": conn, "firstSeen": self.now, "changed": d["source"] == "changed",
                  "short": bool(conn.get("short")), "trust": info.get("trust") if info else {"level": "unknown"},
                  "hasOwnScope": bool(info and info.get("owned"))}
+        if d["source"] == "updated":
+            alert["updatedFrom"] = d["from"]
+            alert["policies"] = sum(1 for r in self.rules if r["app"] == d["from"])
         queue.append(alert)
-        if self.prefs.get("notify") is not False:
-            asyncio.get_running_loop().create_task(self._notify(alert))
+        self._schedule_note(self._note_key(alert))
+
+    def _answer_update(self, alert, choice, source=""):
+        """An updated app: "keep" moves the old path's policies to the new one;
+        anything else asks about it like a new app (its connections come to
+        the gate one by one)."""
+        exe, old = alert["conn"]["exe"], alert["updatedFrom"]
+        self.alerts = [a for a in self.alerts if a["key"] != alert["key"]]
+        if choice == "keep":
+            h = ((self.apps.get(exe) or {}).get("trust") or {}).get("hash") or ""
+            self.rules = [M.make_rule(dict(r, app=exe, exeHash=h if r.get("exeHash") else ""))
+                          if r["app"] == old else r for r in self.rules]
+            self._log([self._log_entry(alert["conn"], "allow", source or "you · kept its policies after an update")])
+            self._rules_changed()
+        else:
+            self._newApps.add(exe)
+            ctx = self._ctx()
+            alerts = list(self.alerts)
+            for c in self.conns:
+                if c.get("exe") == exe and not self._is_own(c):
+                    d = self._decide(c, ctx)
+                    if d["verdict"] == "prompt":
+                        self._queue_alert(alerts, c, d)
+            self.alerts = alerts
+            self._reevaluate()
+        for fc in alert.get("flowConns") or []:        # macOS: its paused connections, decided afresh
+            self._gate_flow(fc)
+        self.changed("alerts")
+        self._close_note_if_done(self._note_key(alert))
+        return True
 
     def answer(self, key, action, scope="host", duration="forever", source="", viaScoped=False, route=None):
         alert = next((a for a in self.alerts if a["key"] == key), None)
         if not alert:
             return False
+        if alert.get("updatedFrom"):
+            return self._answer_update(alert, action, source)
         if duration == "once":
             self.session = dict(self.session, **{key: action})
             self.changed("session")
@@ -471,7 +523,7 @@ class Daemon:
         self._log([self._log_entry(alert["conn"], action, src)])
         self.alerts = [a for a in self.alerts if a["key"] != key]
         self.changed("alerts")
-        self._close_notification(key)
+        self._close_note_if_done(self._note_key(alert))
         self._resolve(alert.get("flows") or [], action == "allow")
         self._reevaluate()
         return True
@@ -490,40 +542,105 @@ class Daemon:
             self.changed("now")
 
     # ------------------------------------------------------------ notifications
-    async def _notify(self, alert):
-        """A desktop notification for a gate request; its buttons answer it."""
+    # A burst of requests from one app (a new session opening ten connections)
+    # shares one notification; its buttons answer all of them.
+    @staticmethod
+    def _note_key(alert):
+        if alert.get("updatedFrom"):
+            return alert["key"]
         c = alert["conn"]
-        title = "Changed app at the gate" if alert.get("changed") else "At the gate"
-        body = "%s → %s:%s" % (_app_with_origin(c), c.get("host") or c.get("raddr") or "?", c.get("rport"))
+        return "app|%s|%s" % (c.get("exe") or c.get("app") or "?", c.get("viaId") or "")
+
+    def _note_alerts(self, nkey):
+        return [a for a in self.alerts if self._note_key(a) == nkey]
+
+    def _schedule_note(self, nkey):
+        if self.prefs.get("notify") is False or nkey in self._notePending:
+            return
+        self._notePending.add(nkey)
+        loop = asyncio.get_running_loop()
+        loop.call_later(0.4, lambda: loop.create_task(self._notify(nkey)))
+
+    async def _notify(self, nkey):
+        """A desktop notification for the waiting requests of one app; its
+        buttons answer them. A newer request replaces it with an updated one."""
+        self._notePending.discard(nkey)
+        alerts = self._note_alerts(nkey)
+        if not alerts or self.pluginActive:
+            return
+        a, c = alerts[0], alerts[0]["conn"]
+        if a.get("updatedFrom"):
+            title = "Updated app at the gate"
+            body = "%s %s · %d %s for the old version" % (
+                _app_with_origin(c), _version_change(a["updatedFrom"], c.get("exe") or ""),
+                a.get("policies") or 0, "policy" if a.get("policies") == 1 else "policies")
+            actions = [("keep", "Keep its policies"), ("new", "Ask as a new app"), ("default", "Open Citadel")]
+        else:
+            title = "Changed app at the gate" if any(x.get("changed") for x in alerts) else "At the gate"
+            dests = ["%s:%s" % (x["conn"].get("host") or x["conn"].get("raddr") or "?", x["conn"].get("rport"))
+                     for x in alerts]
+            body = "%s → %s" % (_app_with_origin(c), ", ".join(dests[:2]))
+            if len(dests) > 2:
+                body += " and %d more" % (len(dests) - 2)
+            actions = [("once", "Allow once"), ("always", "Always allow"), ("block", "Block"), ("default", "Open Citadel")]
+            if len(alerts) > 1:
+                actions.insert(2, ("app", "Allow the app"))
         if self.bridge and self.helperInstalled:
             # macOS: the host app posts it with buttons (UNUserNotificationCenter)
-            self._run(["notify", json.dumps({"key": alert["key"], "title": title, "body": body})])
+            self._run(["notify", json.dumps({"key": nkey, "title": title, "body": body,
+                                             "kind": "update" if a.get("updatedFrom") else "gate"})])
             return
-        actions = [("once", "Allow once"), ("always", "Always allow"), ("block", "Block"), ("default", "Open Citadel")]
+        old = self._notifications.pop(nkey, None)
+        if old and old.returncode is None:
+            try:
+                old.terminate()
+            except ProcessLookupError:
+                pass
         proc = await P.notify(title, body, actions)
         if not proc:
             return
-        self._notifications[alert["key"]] = proc
+        self._notifications[nkey] = proc
         try:
             out = (await proc.stdout.read()).decode(errors="replace").split()
         finally:
-            self._notifications.pop(alert["key"], None)
-        act = out[-1] if out else ""
-        if act == "once":
-            self.answer(alert["key"], "allow", "hostPort", "once", "you · once (notification)")
-        elif act == "always":
-            self.answer(alert["key"], "allow", "host", "forever", "you · from now on (notification)")
-        elif act == "block":
-            self.answer(alert["key"], "deny", "host", "forever", "you · blocked (notification)")
-        elif act == "default":
+            if self._notifications.get(nkey) is proc:
+                self._notifications.pop(nkey, None)
+        if out:
+            self._note_choice(nkey, out[-1])
+
+    def _note_choice(self, nkey, act):
+        """A notification button: applies to every request it stands for."""
+        if act in ("default", "open"):
             self.emit({"type": "open", "view": "gate"})
             if not self._listeners:
                 P.launch_app(["--gate"])
+            return
+        alerts = self._note_alerts(nkey)
+        if not alerts:
+            return
+        if alerts[0].get("updatedFrom"):
+            # the macOS host has the gate's buttons: "Always allow" keeps the policies
+            self.answer(alerts[0]["key"], "keep" if act in ("keep", "always") else "new")
+            return
+        if act == "app":
+            self.answer(alerts[0]["key"], "allow", "app", "forever", "you · the whole app (notification)")
+        for a in alerts:
+            if act == "once":
+                self.answer(a["key"], "allow", "hostPort", "once", "you · once (notification)")
+            elif act == "always":
+                self.answer(a["key"], "allow", "host", "forever", "you · from now on (notification)")
+            elif act == "block":
+                self.answer(a["key"], "deny", "host", "forever", "you · blocked (notification)")
 
-    def _close_notification(self, key):
+    def _close_note_if_done(self, nkey):
+        """Remove a notification once none of its requests is waiting."""
+        if not self._note_alerts(nkey):
+            self._close_notification(nkey)
+
+    def _close_notification(self, nkey):
         if self.bridge and self.helperInstalled:
-            self._run(["notify", json.dumps({"key": key, "remove": True})])
-        proc = self._notifications.pop(key, None)
+            self._run(["notify", json.dumps({"key": nkey, "remove": True})])
+        proc = self._notifications.pop(nkey, None)
         if proc and proc.returncode is None:
             try:
                 proc.terminate()
@@ -644,12 +761,14 @@ class Daemon:
         self.totals = {"connections": len(self.conns), "apps": len(self.groups), "denied": denied}
         still = [a for a in self.alerts if not self._is_own(a["conn"])
                  and (M.decide(a["conn"], self.rules, ctx)["verdict"] == "prompt" or a.get("changed"))]
-        for a in self.alerts:
-            if a not in still:
-                self._close_notification(a["key"])
-                if a.get("flows"):                     # answered by a new policy or the mode
-                    self._resolve(a["flows"], M.decide(a["conn"], self.rules, ctx)["verdict"] == "allow")
+        gone = [a for a in self.alerts if a not in still]
         self.alerts = still
+        for a in gone:
+            self._close_note_if_done(self._note_key(a))
+            if a.get("flows"):                         # answered by a new policy or the mode
+                self._resolve(a["flows"], M.decide(a["conn"], self.rules, ctx)["verdict"] == "allow")
+            for fc in a.get("flowConns") or []:
+                self._gate_flow(fc)
         self.changed("decisions", "groups", "totals", "alerts", "activeProfile")
         if self.enforce:
             self._sync_enforcement(False)
@@ -919,17 +1038,7 @@ class Daemon:
         """A new connection the network extension paused until the gate answers,
         or a button pressed on one of the host's notifications."""
         if ev.get("type") == "answer" and not self.pluginActive:
-            key, choice = str(ev.get("key") or ""), ev.get("choice")
-            if choice == "once":
-                self.answer(key, "allow", "hostPort", "once", "you · once (notification)")
-            elif choice == "always":
-                self.answer(key, "allow", "host", "forever", "you · from now on (notification)")
-            elif choice == "block":
-                self.answer(key, "deny", "host", "forever", "you · blocked (notification)")
-            elif choice == "open":
-                self.emit({"type": "open", "view": "gate"})
-                if not self._listeners:
-                    P.launch_app(["--gate"])
+            self._note_choice(str(ev.get("key") or ""), str(ev.get("choice") or ""))
             return
         if ev.get("type") in ("error", "stats") and not self.pluginActive:
             self._on_proxy_line(ev)               # proxy routing in the extension reports like citadel-proxy
@@ -956,20 +1065,27 @@ class Daemon:
         if live:                                  # the monitor may already know more (launcher, command, country)
             for k in ("cmd", "chain", "cc", "org", "host"):
                 conn[k] = live.get(k) or conn[k]
-        d = M.decide(conn, self.rules, self._ctx())
+        self._gate_flow(conn)
+
+    def _gate_flow(self, conn):
+        """Decide a paused flow now, or add it to the gate request it waits on.
+        An updated app's request keeps the whole connections, since they go
+        back to the gate one by one if you treat it as a new app."""
+        d = self._decide(conn, self._ctx())
         if d["verdict"] != "prompt":
             self._resolve([conn["flowId"]], d["verdict"] == "allow")
             return
-        key = M.alert_key(conn)
+        key = self._alert_key(conn, d)
+        field, item = ("flowConns", conn) if d["source"] == "updated" else ("flows", conn["flowId"])
         existing = next((a for a in self.alerts if a["key"] == key), None)
         if existing:
-            existing.setdefault("flows", []).append(conn["flowId"])
+            existing.setdefault(field, []).append(item)
             return
         alerts = list(self.alerts)
         self._queue_alert(alerts, conn, d)
         for a in alerts:
             if a["key"] == key:
-                a["flows"] = [conn["flowId"]]
+                a[field] = [item]
         self.alerts = alerts
         self.changed("alerts")
 
@@ -1431,6 +1547,16 @@ class Daemon:
         if self._saveHandle:
             self._saveHandle.cancel()
             self._write_state()
+
+
+def _version_change(old, new):
+    """ "2.1.281 → 2.1.283": the path parts that differ between two versions."""
+    strip = lambda p: re.sub(r"^[0-9a-z]{32}-", "", p)
+    a, b = old.split("/"), new.split("/")
+    if len(a) != len(b):
+        return ""
+    diff = [(strip(x), strip(y)) for x, y in zip(a, b) if x != y]
+    return " ".join("%s → %s" % d for d in diff)
 
 
 def _app_with_origin(conn):
