@@ -58,7 +58,7 @@ INTERPRETER = re.compile(r"^(python|node|perl|ruby|bash|sh|dash|zsh|fish|lua|lua
 # state keys sent to front-ends (the names the plugin's views read on `s`)
 PUBLIC = ["rules", "profiles", "profileOverride", "mode", "silentUntil", "enforce", "lists", "decisionLog", "prefs",
           "conns", "apps", "network", "decisions", "groups", "alerts", "stats", "listStatus", "ipCidrCount", "geoip",
-          "approx", "protectedPids", "recentShort", "kernelLog", "helperVersion", "helperLogging", "learned", "rate",
+          "approx", "protectedPids", "recentShort", "kernelLog", "dnsNames", "helperVersion", "helperLogging", "learned", "rate",
           "totals", "monitorError", "monitorUp", "ticks", "now", "activeProfile", "inWheel", "helperInstalled",
           "enforceActive", "enforceBusy", "enforceError", "enforceAppliedAt", "enforceDrops", "proxies", "defaultRoute",
           "proxyStatus", "proxyLog", "proxyCarried", "proxyCheck", "proxyError", "explanations", "explainTestResult",
@@ -109,6 +109,7 @@ class Daemon:
         self.stats = {"series": [], "topAppsToday": [], "topHostsToday": [], "countriesToday": [], "topApps7d": []}
         self.listStatus, self.ipCidrs, self.geoip, self.approx = {}, [], {"installed": False, "error": ""}, {}
         self.protectedPids, self.recentShort, self.kernelLog = {}, [], {"running": False, "error": "", "seen": 0}
+        self.dnsNames = {"state": "off", "error": "", "seen": 0}
         self.helperVersion, self.helperLogging, self.learned = "", False, {}
         self.rate, self.totals = {"up": 0, "down": 0}, {"connections": 0, "apps": 0, "denied": 0}
         self.monitorError, self.monitorUp, self.ticks, self.now, self.uid = "", False, 0, _now(), -1
@@ -349,6 +350,8 @@ class Daemon:
         self.network = m.get("network") or {"names": [], "ssid": ""}
         if m.get("kernelLog"):
             self.kernelLog = m["kernelLog"]
+        if m.get("dnsNames"):
+            self.dnsNames = m["dnsNames"]
         first = self.ticks == 0
         self.ticks += 1
         self._prune_expired_rules()
@@ -412,7 +415,7 @@ class Daemon:
             self.alerts = new_alerts
         if logged:
             self._log(logged)
-        self.changed("now", "uid", "protectedPids", "conns", "apps", "network", "kernelLog", "ticks", "learned",
+        self.changed("now", "uid", "protectedPids", "conns", "apps", "network", "kernelLog", "dnsNames", "ticks", "learned",
                      "decisions", "groups", "rate", "totals", "recentShort", "alerts", "activeProfile")
         if self.enforce:
             self._sync_enforcement(first)

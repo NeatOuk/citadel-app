@@ -42,6 +42,7 @@ QtObject {
   property var protectedPids: ({})
   property var recentShort: []
   property var kernelLog: ({ running: false, error: "", seen: 0 })
+  property var dnsNames: ({ state: "off", error: "", seen: 0 })
   property string helperVersion: ""
   property bool helperLogging: false
   property var learned: ({})

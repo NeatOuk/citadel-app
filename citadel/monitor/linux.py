@@ -516,6 +516,55 @@ def proc_exe(pid):
         return ""
 
 
+RESOLVE_MONITOR = os.environ.get("CITADEL_RESOLVE_MONITOR", "/run/systemd/resolve/io.systemd.Resolve.Monitor")
+
+
+def dns_follower():
+    """Follow systemd-resolved's query results (varlink), so connections get
+    the names apps asked for. Reading them needs polkit's
+    org.freedesktop.resolve1.subscribe-query-results, which citadel-helper
+    1.3.2 grants the admin group. Never asks for a password: without the
+    permission the resolver refuses at once, and it's tried again later."""
+    while True:
+        wait = 60
+        try:
+            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            s.connect(RESOLVE_MONITOR)
+            s.sendall(json.dumps({"method": "io.systemd.Resolve.Monitor.SubscribeQueryResults",
+                                  "more": True}).encode() + b"\0")
+            buf = b""
+            while True:
+                data = s.recv(65536)
+                if not data:
+                    break
+                buf += data
+                while b"\0" in buf:
+                    raw, buf = buf.split(b"\0", 1)
+                    msg = json.loads(raw.decode("utf-8", "replace"))
+                    if msg.get("error"):
+                        denied = msg["error"] in ("io.systemd.InteractiveAuthenticationRequired",
+                                                  "org.varlink.service.PermissionDenied")
+                        dns_state.update(state="denied" if denied else "unavailable", error=msg["error"])
+                        raise ConnectionError(msg["error"])
+                    dns_state.update(state="on", error="")
+                    learn_names(msg.get("parameters") or {})
+            dns_state.update(state="unavailable", error="the resolver closed the connection")
+            wait = 5
+        except FileNotFoundError:
+            dns_state.update(state="unavailable", error="systemd-resolved is not running")
+            wait = 300
+        except (OSError, ValueError) as e:
+            if dns_state["state"] not in ("denied", "unavailable"):
+                dns_state.update(state="unavailable", error=str(e))
+        finally:
+            try:
+                s.close()
+            except (OSError, UnboundLocalError):
+                pass
+        time.sleep(wait)
+
+
 def start_threads():
     threading.Thread(target=process_watcher, daemon=True).start()
     threading.Thread(target=kernel_log_reader, daemon=True).start()
+    threading.Thread(target=dns_follower, daemon=True).start()

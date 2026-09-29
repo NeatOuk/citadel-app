@@ -179,6 +179,51 @@ def _rdns(ip):
     rdns_pending.discard(ip)
 
 
+# Names apps looked up, from the system resolver (Linux: systemd-resolved's
+# query monitor): address -> [name, time]. Better than reverse DNS, which
+# gives nothing for most CDNs or a name made from the address itself.
+dns_names = {}
+dns_lock = threading.Lock()
+dns_state = {"state": "off", "error": "", "seen": 0}      # off | on | denied | unavailable
+
+
+def learn_names(msg):
+    """One query result: every answered address -> the name that was asked
+    (the app's name, not the CDN's canonical one)."""
+    asked = [str(q.get("name") or "").rstrip(".").lower() for q in msg.get("question") or []]
+    asked = [a for a in asked if a]
+    if msg.get("state") != "success" or not asked:
+        return 0
+    n, now = 0, time.time()
+    with dns_lock:
+        for a in msg.get("answer") or []:
+            addr = ((a.get("rr") or {}).get("address")) or []
+            try:
+                ip = str(ipaddress.ip_address(bytes(addr))) if len(addr) in (4, 16) else ""
+            except ValueError:
+                ip = ""
+            if ip:
+                dns_names[ip] = [asked[0], now]
+                n += 1
+        if len(dns_names) > 20000:
+            for ip, _ in sorted(dns_names.items(), key=lambda kv: kv[1][1])[:5000]:
+                del dns_names[ip]
+    dns_state["seen"] += n
+    return n
+
+
+def dns_name(ip):
+    with dns_lock:
+        hit = dns_names.get(ip)
+    return hit[0] if hit and time.time() - hit[1] < 86400 else None
+
+
+def host_name(ip, known=""):
+    """The best name for an address: the one this connection already has,
+    the one an app looked up, else reverse DNS."""
+    return known or dns_name(ip) or rdns(ip)
+
+
 def rdns(ip):
     hit = rdns_cache.get(ip)
     if hit and time.time() - hit[1] < 3600:
@@ -866,7 +911,7 @@ def short_connections(conns, prev_keys):
         o = (rec or {}).get("origin") or {}
         v = o.get("via") or {}
         exe = (rec or {}).get("exe", "")
-        host = rdns(ev["dst"])
+        host = host_name(ev["dst"])
         out.append({
             "key": "short|%s|%d|%s|%d|%.3f" % (ev["proto"], ev["spt"], ev["dst"], ev["dpt"], ev["ts"]),
             "short": True, "ts": ev["ts"], "confidence": conf,
@@ -920,7 +965,7 @@ def tick(hist, prev, table_cache):
         dt = max(0.5, now - p["ts"]) if p else 0
         up_rate = max(0, (r["up"] - p["up"]) / dt) if p else 0
         down_rate = max(0, (r["down"] - p["down"]) / dt) if p else 0
-        host = rdns(r["raddr"])
+        host = host_name(r["raddr"], p.get("host", "") if p else "")
         c = {"key": key, "proto": r["proto"], "state": r["state"].lower(),
              "raddr": r["raddr"], "rport": r["rport"], "lport": r["lport"],
              "pid": r["pid"], "exe": exe, "app": app_name(exe, r["comm"], r["cgroup"]),
@@ -933,7 +978,7 @@ def tick(hist, prev, table_cache):
             # Citadel's own proxy tunnels: the app's side is shown separately
             c.update(app="Citadel proxy", via="", viaId="", viaKind="")
         conns.append(c)
-    nextprev = {c["key"]: {"ts": now, "up": c["up"], "down": c["down"],
+    nextprev = {c["key"]: {"ts": now, "up": c["up"], "down": c["down"], "host": c["host"],
                            "sock": (c["lport"], c["raddr"], c["rport"])} for c in conns}
     short = short_connections(conns, {p["sock"] for p in prev.values() if "sock" in p})
 
@@ -956,6 +1001,7 @@ def tick(hist, prev, table_cache):
           "totals": {"rx": rx, "tx": tx}, "network": {"names": net["names"], "ssid": net["ssid"], "source": net["source"]},
           "short": short,
           "kernelLog": {"running": kernel_state["running"], "error": kernel_state["error"], "seen": kernel_state["seen"]},
+          "dnsNames": dict(dns_state),
           "rdnsPending": len(rdns_pending)})
     return nextprev
 
