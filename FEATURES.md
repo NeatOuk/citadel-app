@@ -31,7 +31,7 @@ When an app connects somewhere no policy covers, the connection waits **at the g
 
 - **Where you answer:**
   - in the window's **Gate** tab
-  - from the desktop notification, which has **Allow once / Always allow / Block / Open Citadel** buttons
+  - from the desktop notification, which has **Allow once / Always allow / Block / Open Citadel** buttons. A burst of requests from one app (a new session opening ten connections) shares one notification, with an extra **Allow the app** button; its buttons answer all of them.
 - **What a request shows:**
   - the app and its integrity
   - who started it
@@ -46,6 +46,7 @@ When an app connects somewhere no policy covers, the connection waits **at the g
 - **Grouping:** connections from the same app to the same destination share one request.
 - **No answer:** after a timeout (30 s, 90 s, 5 min, or never) the request gets your default, Allow once or Block once. The timer restarts while you read an Explain answer.
 - **Changed programs:** if an app you allowed changes without a package update, its next connection comes back to the gate, marked as changed.
+- **Updates to a new path:** tools such as mise, asdf, nvm and Nix install each version in its own folder (`…/claude/2.1.281/claude`, then `…/2.1.283/claude`). When a new version connects and only the old one has policies, Citadel asks once: **Keep its policies** (they move to the new version) or **Ask as a new app**.
 
 ## 2. Policies
 
@@ -236,6 +237,7 @@ The [Omarchy plugin](https://github.com/NeatOuk/citadel) and this app are separa
 ## 16. Privacy
 
 - **No account and no telemetry:** nothing leaves your machine on its own.
+- **Name lookups:** to name connections, the monitor reads which names apps look up from systemd-resolved, on this machine only. Nothing is stored beyond a day, and nothing leaves the machine.
 - **Downloads only on request:** feeds and the country and network-owner databases download only when you turn them on.
 - **Explain:** sends nothing until you press it, and only to the agent you use.
 - **Proxy logins:** stay in your keyring. They never appear in Citadel's files.
@@ -252,7 +254,8 @@ The [Omarchy plugin](https://github.com/NeatOuk/citadel) and this app are separa
 
 - **The first packet may leave (Linux).** Citadel sees a new connection within one check, and a moment before it answers. Every later attempt follows your verdict. On macOS the Network Extension holds even the first packet.
 - **Host names:**
-  - Host names come from reverse DNS, name lookups for your policies, and what apps ask for.
+  - Host names come from the names apps look up (systemd-resolved, with citadel-helper 1.3.2 or newer), then reverse DNS. Without systemd-resolved or that permission, many CDN addresses have no usable name, so **Always allow** covers that address only; Settings shows which source is in use.
+  - Several sites can share one CDN address. Citadel names a connection after the latest lookup of its address, which is almost always the app's own.
   - CDNs may show their own names, and domain feeds only match names Citadel knows.
   - Citadel isn't a DNS ad blocker. Use it next to Pi-hole or AdGuard Home, not instead of them.
 - **Shared processes:**

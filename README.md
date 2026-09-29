@@ -16,7 +16,13 @@ the same core, as a background service with its own window and tray icon.
 
 - **Ask at the gate.** When an app connects somewhere new, Citadel asks. Answer in
   the window or straight from the notification: **Allow once**, **Always allow** or
-  **Block**. Unanswered requests fall back to your default after a timeout.
+  **Block**. A burst from one app is one notification. Unanswered requests fall back
+  to your default after a timeout.
+- **Real host names.** Connections are named after the names apps look up
+  (`api.example.com`, not a CDN address), so a policy keeps working when the
+  service moves to another address.
+- **Survives updates.** Apps that install each version in its own folder (mise,
+  asdf, nvm, Nix) keep their policies after an update, once you confirm.
 - **Per-app policies.** A policy can cover:
   - an app
   - a host (subdomains included), an IP or CIDR, a port
@@ -89,7 +95,7 @@ Optional:
 
 | Package (Arch name) | Adds |
 |---|---|
-| `citadel-helper` 1.3+ ([repo](https://github.com/NeatOuk/citadel-helper)) | blocking and proxy routing; without it Citadel watches and asks but blocks nothing |
+| `citadel-helper` 1.3+ ([repo](https://github.com/NeatOuk/citadel-helper)) | blocking and proxy routing; without it Citadel watches and asks but blocks nothing. 1.3.2+ also lets Citadel read the names apps look up (systemd-resolved) |
 | `python-maxminddb` | countries and network owners |
 | `libsecret` | proxy usernames and passwords in the keyring |
 | `networkmanager` or `iwd` | zones by Wi-Fi name (wired links work either way) |
