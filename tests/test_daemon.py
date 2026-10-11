@@ -318,6 +318,26 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.c.state["decisions"]["k9"]["source"], "citadel")
         self.assertEqual(self.c.state["alerts"], [])
 
+    async def test_proxy_runs_in_the_daemon(self):
+        self.feed(tick([]))
+        r = await self.c.call("saveProxy", {"name": "Dead", "type": "http", "host": "127.0.0.1", "port": 1}, "", "")
+        pid = r["result"]["id"]
+        self.assertTrue(await self.c.wait_for(lambda s: pid in (s.get("proxyStatus") or {}), timeout=10))
+        self.assertFalse(self.c.state["proxyStatus"][pid]["ok"])     # nothing listens on port 1
+        await self.c.call("removeProxy", pid)
+        self.assertTrue(await self.c.wait_for(lambda s: not self.d._proxy, timeout=5))
+
+    async def test_daemon_proxy_tunnels_never_wait_at_the_gate(self):
+        self.d.prefs["notify"] = False
+        self.feed(tick([]))
+        self.assertTrue(await self.c.wait_for(lambda s: s.get("ticks", 0) >= 1))
+        own = conn("k8", "/usr/bin/python3.14", "192.168.1.20", 3128, app="python3", pid=os.getpid(),
+                   cmd="/usr/bin/python3 /usr/bin/citadel-daemon")
+        self.feed(tick([own], ts=1004))
+        self.assertTrue(await self.c.wait_for(lambda s: "k8" in s.get("decisions", {})))
+        self.assertEqual(self.c.state["decisions"]["k8"]["source"], "citadel")
+        self.assertEqual(self.c.state["alerts"], [])
+
     @unittest.skipUnless(sys.platform.startswith("linux"), "the Omarchy plugin exists on Linux only")
     async def test_pauses_while_the_omarchy_plugin_runs(self):
         self.feed(tick([conn("k1", "/usr/bin/curl", "1.1.1.1", new=False)]))
