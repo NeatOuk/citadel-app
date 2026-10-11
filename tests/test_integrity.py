@@ -98,7 +98,8 @@ class Integrity(unittest.TestCase):
         exe = os.path.join(d.name, "tool")
         with open(exe, "wb") as f:
             f.write(b"bin")
-        with unittest.mock.patch.object(_linux, "pkg_owner", return_value=""):
+        with unittest.mock.patch.object(_linux, "pkg_owner", return_value=""), \
+                unittest.mock.patch.object(_linux, "PKG_BACKEND", "rpm"):      # any package manager, on any OS
             first = _linux.trust(exe)
             self.assertEqual(first["reason"], "checking the package")
             self.assertEqual(first["hash"], hashlib.sha256(b"bin").hexdigest())   # pinned rules need it at once
