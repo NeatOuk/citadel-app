@@ -103,6 +103,10 @@ def parse_lsof(text):
 _lsof_cache = {"ts": 0, "rows": []}
 
 
+def sockets():
+    return parse_ss([], "tcp") + parse_ss([], "udp")
+
+
 def parse_ss(args, proto):
     """Same shape as linux.parse_ss: established/connecting TCP, connected UDP."""
     if time.time() - _lsof_cache["ts"] > 0.5:
@@ -333,6 +337,7 @@ def _check_trust(exe, key):
     except Exception as e:                                  # never let one program stop the checks
         t = {"level": "unknown", "reason": str(e)[:80]}
     trust_cache[key] = t
+    trim(trust_cache, 2000)
     _trust_pending.discard(key)
     return t
 

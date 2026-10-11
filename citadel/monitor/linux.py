@@ -29,14 +29,15 @@ from .common import _run                                  # noqa: F401
 
 # ------------------------------------------------------------------ ss parsing
 
-USERS = re.compile(r'users:\(\("([^"]*)",pid=(\d+),fd=\d+')
 UIDF = re.compile(r"\buid:(\d+)")
 CGF = re.compile(r"\bcgroup:(\S+)")
+INOF = re.compile(r"\bino:(\d+)")
+sock_owner = {}               # socket inode -> (pid, comm) of a process holding it
 
 
 def parse_ss(args, proto):
     try:
-        text = subprocess.run(["ss", "-H", "-n", "-p", "-e", "--cgroup"] + args,
+        text = subprocess.run(["ss", "-H", "-n", "-e", "--cgroup"] + args,
                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                               text=True, timeout=10).stdout
     except (OSError, subprocess.TimeoutExpired):
@@ -55,6 +56,8 @@ def parse_ss(args, proto):
                     cur["down"] = int(m.group(1))
             continue
         toks = line.split()
+        if toks[0] in ("tcp", "udp"):                # several protocols: ss prints the Netid first
+            proto, toks = toks[0], toks[1:]
         # tcp with state filter: Recv-Q Send-Q Local Peer ...
         # (when several states are requested, ss prints the state first)
         if not toks[0].isdigit():
@@ -67,17 +70,91 @@ def parse_ss(args, proto):
         raddr, rport = split_addr(toks[3])
         if not raddr or rport == 0 or raddr in ("*", "0.0.0.0", "::"):
             continue
-        m = USERS.search(line)
-        comm, pid = (m.group(1), int(m.group(2))) if m else ("", 0)
+        m = INOF.search(line)
+        ino = int(m.group(1)) if m else 0
         m = UIDF.search(line)
         uid = int(m.group(1)) if m else 0
         m = CGF.search(line)
         cg = m.group(1) if m else ""
         cur = {"proto": proto, "state": state, "laddr": laddr, "lport": lport,
-               "raddr": raddr, "rport": rport, "comm": comm, "pid": pid,
-               "uid": uid, "cgroup": cg, "up": 0, "down": 0}
+               "raddr": raddr, "rport": rport, "comm": "", "pid": 0,
+               "uid": uid, "cgroup": cg, "ino": ino, "up": 0, "down": 0}
         rows.append(cur)
+    resolve_owners(rows)
     return rows
+
+
+def _fd_sockets(pid):
+    """Inodes of the sockets open in a process (empty if it isn't ours to read)."""
+    out = set()
+    try:
+        fds = os.listdir("/proc/%d/fd" % pid)
+    except OSError:
+        return out
+    for fd in fds:
+        try:
+            link = os.readlink("/proc/%d/fd/%s" % (pid, fd))
+        except OSError:
+            continue
+        if link.startswith("socket:["):
+            out.add(int(link[8:-1]))
+    return out
+
+
+def _own_pids():
+    try:
+        return [int(d) for d in os.listdir("/proc") if d.isdigit() and os.stat("/proc/" + d).st_uid == MY_UID]
+    except OSError:
+        return []
+
+
+def resolve_owners(rows):
+    """pid and process name of each of the user's sockets, as `ss -p` gives,
+    without reading every process's fds on every tick: known sockets come
+    from a cache, new ones are looked up among the processes of the socket's
+    cgroup first, then (if it moved) among all of the user's processes."""
+    want = {}
+    for r in rows:
+        if r["uid"] != MY_UID or not r["ino"]:
+            continue
+        o = sock_owner.get(r["ino"])
+        if o and (o[0] == 0 or os.path.exists("/proc/%d" % o[0])):
+            r["pid"], r["comm"] = o
+        else:
+            want.setdefault(r["cgroup"], set()).add(r["ino"])
+    missing = set().union(*want.values()) if want else set()
+    found = {}
+    for cg, inos in want.items():
+        pids = [int(x) for x in read("/sys/fs/cgroup" + cg + "/cgroup.procs").split() if x.isdigit()]
+        _find_owners(pids, missing, found)
+    if missing:
+        _find_owners(_own_pids(), missing, found)
+    for ino in missing:
+        found[ino] = (0, "")                   # held by nobody we can read: ss -p shows none either
+    for r in rows:
+        if r["ino"] in found:
+            r["pid"], r["comm"] = found[r["ino"]]
+    live = {r["ino"] for r in rows}
+    for ino in [i for i in sock_owner if i not in live]:
+        del sock_owner[ino]
+    sock_owner.update(found)
+
+
+def _find_owners(pids, missing, found):
+    for pid in pids:
+        if not missing:
+            return
+        hit = _fd_sockets(pid) & missing
+        if hit:
+            comm = read("/proc/%d/comm" % pid).strip()
+            for ino in hit:
+                found[ino] = (pid, comm)
+            missing -= hit
+
+
+def sockets():
+    """Established/connecting TCP and connected UDP, from one ss run (-p walks every process's fds)."""
+    return parse_ss(["-t", "-u", "-i", "state", "established", "state", "syn-sent"], "")
 
 
 def proc_table():
@@ -102,6 +179,9 @@ def proc_table():
 
 trust_cache = {}
 owner_cache = {}
+_trust_pending = set()
+_trust_failed = {}            # key -> time of a failed check
+_trust_pool = concurrent.futures.ThreadPoolExecutor(max_workers=2)
 
 
 # Package databases. The integrity check compares a program against the
@@ -157,6 +237,7 @@ def pkg_owner(path):
         if name:
             break
     owner_cache[path] = name
+    trim(owner_cache, 2000)
     return name
 
 
@@ -257,32 +338,60 @@ def trust(exe, deleted=False):
     if deleted:
         return {"level": "suspicious", "reason": "binary deleted since start"}
     if re.match(r"^/(tmp|var/tmp|dev/shm|run/user/\d+)/", exe):
-        t = {"level": "suspicious", "reason": "runs from a temporary folder"}
-    else:
-        try:
-            digest = sha256(exe)
-        except OSError:
-            digest = ""
-        real = os.path.realpath(exe)
-        pkg = pkg_owner(real) or (pkg_owner(exe) if real != exe else "")
-        if pkg:
-            want = package_digest(pkg, real)
-            try:
-                got = digest if want and want[0] == "sha256" else (file_digest(real, want[0]) if want else "")
-            except (OSError, ValueError):
-                got = ""
-            if want and got == want[1]:
-                t = {"level": "verified", "pkg": pkg}
-            elif want:
-                t = {"level": "modified", "pkg": pkg, "reason": "differs from package"}
-            else:
-                t = {"level": "verified", "pkg": pkg, "reason": "no checksum in package"}
-        elif PKG_BACKEND:
-            t = {"level": "unpackaged", "reason": "not from a system package"}
-        else:
-            t = {"level": "unknown", "reason": "no package database this Citadel knows"}
-        t["hash"] = digest
+        trust_cache[key] = {"level": "suspicious", "reason": "runs from a temporary folder"}
+        return trust_cache[key]
+    # the hash is needed now (pinned rules compare it); the package lookup can wait
+    try:
+        digest = sha256(exe)
+    except OSError:
+        digest = ""
+    if key not in _trust_pending and time.time() - _trust_failed.get(key, 0) > 300:
+        _trust_pending.add(key)
+        _trust_pool.submit(_check_trust, exe, key, digest)
+    return {"level": "unknown", "reason": "checking the package", "hash": digest}
+
+
+def trust_now(exe):
+    """The same check, synchronously (tests, selftest)."""
+    st = os.stat(exe)
+    key = (exe, st.st_ino, st.st_mtime_ns, st.st_size)
+    return trust_cache.get(key) or _check_trust(exe, key, sha256(exe))
+
+
+def _check_trust(exe, key, digest):
+    try:
+        t = _package_level(exe, digest)
+    except Exception as e:                 # not cached: tried again in 5 minutes
+        log("trust check failed for %s: %s" % (exe, e))
+        _trust_failed[key] = time.time()
+        return {"level": "unknown", "reason": "check failed", "hash": digest}
+    finally:
+        _trust_pending.discard(key)
     trust_cache[key] = t
+    trim(trust_cache, 2000)
+    return t
+
+
+def _package_level(exe, digest):
+    real = os.path.realpath(exe)
+    pkg = pkg_owner(real) or (pkg_owner(exe) if real != exe else "")
+    if pkg:
+        want = package_digest(pkg, real)
+        try:
+            got = digest if want and want[0] == "sha256" else (file_digest(real, want[0]) if want else "")
+        except (OSError, ValueError):
+            got = ""
+        if want and got == want[1]:
+            t = {"level": "verified", "pkg": pkg}
+        elif want:
+            t = {"level": "modified", "pkg": pkg, "reason": "differs from package"}
+        else:
+            t = {"level": "verified", "pkg": pkg, "reason": "no checksum in package"}
+    elif PKG_BACKEND:
+        t = {"level": "unpackaged", "reason": "not from a system package"}
+    else:
+        t = {"level": "unknown", "reason": "no package database this Citadel knows"}
+    t["hash"] = digest
     return t
 
 
@@ -467,46 +576,94 @@ def boot_time():
 BOOT = boot_time()
 
 
+_loadavg = {"fd": None}
+
+
+def last_pid():
+    """The most recently allocated pid or thread id (last field of /proc/loadavg).
+    The file stays open: pread regenerates it for ~1 us instead of an open."""
+    try:
+        if _loadavg["fd"] is None:
+            _loadavg["fd"] = os.open("/proc/loadavg", os.O_RDONLY)
+        return int(os.pread(_loadavg["fd"], 128, 0).split()[-1])
+    except (OSError, ValueError, IndexError):
+        return -1
+
+
+TGID = re.compile(rb"\nTgid:\s*(\d+)")
+
+
+def new_pids(after, upto):
+    """Processes (not threads) among the ids allocated since the last look."""
+    out = set()
+    for pid in range(after + 1, upto + 1):
+        try:
+            fd = os.open("/proc/%d/status" % pid, os.O_RDONLY)
+        except OSError:
+            continue                           # already gone
+        try:
+            m = TGID.search(os.read(fd, 1024))
+        except OSError:
+            m = None
+        finally:
+            os.close(fd)
+        if m and int(m.group(1)) == pid:
+            out.add(pid)
+    return out
+
+
+def remember(pid, now):
+    try:
+        if os.stat("/proc/%d" % pid).st_uid != MY_UID:
+            return
+    except OSError:
+        return
+    d = describe(pid)
+    if not d:
+        return
+    cg = read("/proc/%d/cgroup" % pid).strip()
+    cg = cg.split("::", 1)[1].lstrip("/") if "::" in cg else ""
+    o = origin(pid, cg) or {}
+    # exact start from /proc/<pid>/stat, not the moment this scan saw it
+    started = BOOT + d["start"] / float(CLK_TCK)
+    rec = {"pid": pid, "ppid": d["ppid"], "start": min(now, started), "end": None, "exe": d["exe"],
+           "comm": d["comm"], "name": d["name"], "kind": d["kind"], "cgroup": cg, "args": d["args"],
+           "origin": o, "hosts": hosts_in_args(d["args"]),
+           "scriptHosts": script_hosts(d["id"]) if d["kind"] == "script" else []}
+    with proc_lock:
+        proc_seen[pid] = rec
+
+
 def process_watcher():
     """Every 50 ms, remember new processes of this user with their origin,
-    so a connection can still be attributed after the process exits."""
-    known = set()
+    so a connection can still be attributed after the process exits.
+    A look costs one read of /proc/loadavg; only new pids are opened, and
+    the full /proc listing (for exits) runs once a second."""
+    known, last, full_at = set(), -1, 0.0
     while True:
-        try:
-            pids = {int(d) for d in os.listdir("/proc") if d.isdigit()}
-        except OSError:
-            time.sleep(1)
-            continue
-        now = time.time()
-        for pid in pids - known:
+        now, lp = time.time(), last_pid()
+        gone = set()
+        if now - full_at >= 1 or last < 0 or lp < last or lp - last > 4096:   # also: pid wrap, huge bursts
             try:
-                if os.stat("/proc/%d" % pid).st_uid != MY_UID:
-                    continue
+                pids = {int(d) for d in os.listdir("/proc") if d.isdigit()}
             except OSError:
+                time.sleep(1)
                 continue
-            d = describe(pid)
-            if not d:
-                continue
-            cg = read("/proc/%d/cgroup" % pid).strip()
-            cg = cg.split("::", 1)[1].lstrip("/") if "::" in cg else ""
-            o = origin(pid, cg) or {}
-            # exact start from /proc/<pid>/stat, not the moment this scan saw it
-            started = BOOT + d["start"] / float(CLK_TCK)
-            rec = {"pid": pid, "ppid": d["ppid"], "start": min(now, started), "end": None, "exe": d["exe"],
-                   "comm": d["comm"], "name": d["name"], "kind": d["kind"], "cgroup": cg, "args": d["args"],
-                   "origin": o, "hosts": hosts_in_args(d["args"]),
-                   "scriptHosts": script_hosts(d["id"]) if d["kind"] == "script" else []}
-            with proc_lock:
-                proc_seen[pid] = rec
+            new, gone, known, full_at = pids - known, known - pids, pids, now
+        else:
+            new = new_pids(last, lp) - known if lp != last else set()
+            known |= new
+        last = lp
+        for pid in new:
+            remember(pid, now)
         with proc_lock:
-            for pid in known - pids:
+            for pid in gone:
                 r = proc_seen.get(pid)
                 if r and r["end"] is None:
                     r["end"] = now
             for pid in [p for p, r in proc_seen.items() if r["end"] and now - r["end"] > 180]:
                 del proc_seen[pid]
-        known = pids
-        time.sleep(0.05)          # a scan costs ~0.1 ms, so 20/s is ~0.2% of a core
+        time.sleep(0.05)
 
 
 def proc_exe(pid):
