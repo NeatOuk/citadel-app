@@ -15,3 +15,5 @@ macos/Packages/*/.build/
 macos/Packages/*/.swiftpm/
 macos/Citadel.xcodeproj/
 macos/build/
+
+CLAUDE.md
