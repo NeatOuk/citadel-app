@@ -1,10 +1,11 @@
 import QtQuick
 import QtQuick.Controls as C
 import qs.Commons
+import qs.Commons as C   // Qt 6.12's QtQuick has its own Color type, which hides ours
 
 C.TextField {
   id: root
-  property color foreground: Color.foreground
+  property color foreground: C.Color.foreground
   property bool password: false
   echoMode: password ? TextInput.Password : TextInput.Normal
   color: foreground

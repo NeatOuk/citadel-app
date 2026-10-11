@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 import qs.Commons
+import qs.Commons as C   // Qt 6.12's QtQuick has its own Color type, which hides ours
 import qs.Ui
 
 import "Model.js" as Model
@@ -17,12 +18,12 @@ ApplicationWindow {
   height: 820
   minimumWidth: 460
   minimumHeight: 480
-  color: Color.background
+  color: C.Color.background
 
   // ---- what the views read from `p`
-  readonly property color foreground: Color.foreground
-  readonly property color urgent: Color.urgent
-  readonly property color dim: Qt.rgba(Color.foreground.r, Color.foreground.g, Color.foreground.b, 0.6)
+  readonly property color foreground: C.Color.foreground
+  readonly property color urgent: C.Color.urgent
+  readonly property color dim: Qt.rgba(C.Color.foreground.r, C.Color.foreground.g, C.Color.foreground.b, 0.6)
   readonly property string fontFamily: Style.font.family
   property string view: "traffic"
   function open() { root.show(); root.raise(); root.requestActivate() }
@@ -141,7 +142,7 @@ ApplicationWindow {
         width: parent.width
         height: paused.implicitHeight + Style.space(20)
         radius: Style.cornerRadius
-        color: Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, 0.14)
+        color: Qt.rgba(C.Color.accent.r, C.Color.accent.g, C.Color.accent.b, 0.14)
         Column {
           id: paused
           anchors.left: parent.left; anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
