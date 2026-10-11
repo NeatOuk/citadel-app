@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Layouts
 import qs.Commons
+import qs.Commons as C   // Qt 6.12's QtQuick has its own Color type, which hides ours
 
 // A labelled setting row with a description and a switch; emits clicked().
 Item {
@@ -8,8 +9,8 @@ Item {
   property string label: ""
   property string description: ""
   property bool checked: false
-  property color foreground: Color.foreground
-  property color accent: Color.accent
+  property color foreground: C.Color.foreground
+  property color accent: C.Color.accent
   property string fontFamily: Style.font.family
   signal clicked()
   implicitHeight: row.implicitHeight + Style.space(6)
