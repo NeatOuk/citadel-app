@@ -621,17 +621,36 @@ def remember(pid, now):
     d = describe(pid)
     if not d:
         return
+    scripts = script_hosts(d["id"]) if d["kind"] == "script" else []
+    if not scripts and (d["comm"] in NON_NETWORK or os.path.basename(d["exe"]) in NON_NETWORK):
+        return                        # attribute() never picks these: no record, no origin to build
     cg = read("/proc/%d/cgroup" % pid).strip()
     cg = cg.split("::", 1)[1].lstrip("/") if "::" in cg else ""
     o = origin(pid, cg) or {}
     # exact start from /proc/<pid>/stat, not the moment this scan saw it
     started = BOOT + d["start"] / float(CLK_TCK)
-    rec = {"pid": pid, "ppid": d["ppid"], "start": min(now, started), "end": None, "exe": d["exe"],
-           "comm": d["comm"], "name": d["name"], "kind": d["kind"], "cgroup": cg, "args": d["args"],
-           "origin": o, "hosts": hosts_in_args(d["args"]),
-           "scriptHosts": script_hosts(d["id"]) if d["kind"] == "script" else []}
+    # only what attribute() reads; repeated strings (exe, cgroup) are shared, not copied per process
+    rec = {"pid": pid, "ppid": d["ppid"], "start": min(now, started), "end": None,
+           "exe": sys.intern(d["exe"]), "comm": sys.intern(d["comm"]), "name": sys.intern(d["name"]),
+           "cgroup": sys.intern(cg), "args": d["args"][:2] if scripts else [],
+           "origin": o, "hosts": hosts_in_args(d["args"]), "scriptHosts": scripts}
     with proc_lock:
         proc_seen[pid] = rec
+
+
+def forget(gone, now):
+    """Processes that exited: stamp their record's end, drop records older than
+    3 minutes, and drop their cached origin (keyed by pid + start, never hit again)."""
+    with proc_lock:
+        for pid in gone:
+            r = proc_seen.get(pid)
+            if r and r["end"] is None:
+                r["end"] = now
+        for pid in [p for p, r in proc_seen.items() if r["end"] and now - r["end"] > 180]:
+            del proc_seen[pid]
+    if gone:
+        for k in [k for k in list(origin_cache) if k[0] in gone]:
+            origin_cache.pop(k, None)
 
 
 def process_watcher():
@@ -656,13 +675,7 @@ def process_watcher():
         last = lp
         for pid in new:
             remember(pid, now)
-        with proc_lock:
-            for pid in gone:
-                r = proc_seen.get(pid)
-                if r and r["end"] is None:
-                    r["end"] = now
-            for pid in [p for p, r in proc_seen.items() if r["end"] and now - r["end"] > 180]:
-                del proc_seen[pid]
+        forget(gone, now)
         time.sleep(0.05)
 
 
