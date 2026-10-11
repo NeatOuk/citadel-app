@@ -55,6 +55,31 @@ class ProcessWatcher(unittest.TestCase):
         subprocess.run(["true"])
         self.assertGreater(L.last_pid(), before)
 
+    def test_remember_keeps_only_what_attribution_uses(self):
+        import time
+        from citadel.monitor import common as C, linux as L
+        C.use(L)
+        quiet = subprocess.Popen(["sleep", "5"])                       # can't open a connection
+        net = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(5)", "--flag"])
+        try:
+            time.sleep(0.2)                                            # let both exec
+            L.remember(quiet.pid, time.time())
+            L.remember(net.pid, time.time())
+            self.assertNotIn(quiet.pid, C.proc_seen)                   # attribute() would skip it anyway
+            rec = C.proc_seen[net.pid]
+            self.assertEqual(rec["args"], [])                          # not a script: args never read
+            self.assertNotIn("kind", rec)
+            self.assertTrue(any(k[0] == net.pid for k in C.origin_cache))
+        finally:
+            for p in (quiet, net):
+                p.kill()
+                p.wait()
+        L.forget({net.pid}, time.time())
+        self.assertIsNotNone(C.proc_seen[net.pid]["end"])
+        self.assertFalse(any(k[0] == net.pid for k in C.origin_cache))  # dead pid: origin dropped
+        L.forget(set(), time.time() + 181)
+        self.assertNotIn(net.pid, C.proc_seen)
+
 
 if __name__ == "__main__":
     unittest.main()
