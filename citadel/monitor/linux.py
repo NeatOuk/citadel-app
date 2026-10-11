@@ -102,6 +102,9 @@ def proc_table():
 
 trust_cache = {}
 owner_cache = {}
+_trust_pending = set()
+_trust_failed = {}            # key -> time of a failed check
+_trust_pool = concurrent.futures.ThreadPoolExecutor(max_workers=2)
 
 
 # Package databases. The integrity check compares a program against the
@@ -157,6 +160,7 @@ def pkg_owner(path):
         if name:
             break
     owner_cache[path] = name
+    trim(owner_cache, 2000)
     return name
 
 
@@ -257,32 +261,60 @@ def trust(exe, deleted=False):
     if deleted:
         return {"level": "suspicious", "reason": "binary deleted since start"}
     if re.match(r"^/(tmp|var/tmp|dev/shm|run/user/\d+)/", exe):
-        t = {"level": "suspicious", "reason": "runs from a temporary folder"}
-    else:
-        try:
-            digest = sha256(exe)
-        except OSError:
-            digest = ""
-        real = os.path.realpath(exe)
-        pkg = pkg_owner(real) or (pkg_owner(exe) if real != exe else "")
-        if pkg:
-            want = package_digest(pkg, real)
-            try:
-                got = digest if want and want[0] == "sha256" else (file_digest(real, want[0]) if want else "")
-            except (OSError, ValueError):
-                got = ""
-            if want and got == want[1]:
-                t = {"level": "verified", "pkg": pkg}
-            elif want:
-                t = {"level": "modified", "pkg": pkg, "reason": "differs from package"}
-            else:
-                t = {"level": "verified", "pkg": pkg, "reason": "no checksum in package"}
-        elif PKG_BACKEND:
-            t = {"level": "unpackaged", "reason": "not from a system package"}
-        else:
-            t = {"level": "unknown", "reason": "no package database this Citadel knows"}
-        t["hash"] = digest
+        trust_cache[key] = {"level": "suspicious", "reason": "runs from a temporary folder"}
+        return trust_cache[key]
+    # the hash is needed now (pinned rules compare it); the package lookup can wait
+    try:
+        digest = sha256(exe)
+    except OSError:
+        digest = ""
+    if key not in _trust_pending and time.time() - _trust_failed.get(key, 0) > 300:
+        _trust_pending.add(key)
+        _trust_pool.submit(_check_trust, exe, key, digest)
+    return {"level": "unknown", "reason": "checking the package", "hash": digest}
+
+
+def trust_now(exe):
+    """The same check, synchronously (tests, selftest)."""
+    st = os.stat(exe)
+    key = (exe, st.st_ino, st.st_mtime_ns, st.st_size)
+    return trust_cache.get(key) or _check_trust(exe, key, sha256(exe))
+
+
+def _check_trust(exe, key, digest):
+    try:
+        t = _package_level(exe, digest)
+    except Exception as e:                 # not cached: tried again in 5 minutes
+        log("trust check failed for %s: %s" % (exe, e))
+        _trust_failed[key] = time.time()
+        return {"level": "unknown", "reason": "check failed", "hash": digest}
+    finally:
+        _trust_pending.discard(key)
     trust_cache[key] = t
+    trim(trust_cache, 2000)
+    return t
+
+
+def _package_level(exe, digest):
+    real = os.path.realpath(exe)
+    pkg = pkg_owner(real) or (pkg_owner(exe) if real != exe else "")
+    if pkg:
+        want = package_digest(pkg, real)
+        try:
+            got = digest if want and want[0] == "sha256" else (file_digest(real, want[0]) if want else "")
+        except (OSError, ValueError):
+            got = ""
+        if want and got == want[1]:
+            t = {"level": "verified", "pkg": pkg}
+        elif want:
+            t = {"level": "modified", "pkg": pkg, "reason": "differs from package"}
+        else:
+            t = {"level": "verified", "pkg": pkg, "reason": "no checksum in package"}
+    elif PKG_BACKEND:
+        t = {"level": "unpackaged", "reason": "not from a system package"}
+    else:
+        t = {"level": "unknown", "reason": "no package database this Citadel knows"}
+    t["hash"] = digest
     return t
 
 

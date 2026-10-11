@@ -54,6 +54,7 @@ GEO_DB = os.path.join(GEO_DIR, "dbip-country-lite.mmdb")
 ASN_DB = os.path.join(GEO_DIR, "dbip-asn-lite.mmdb")
 HISTORY_DB = os.path.join(STATE, "history.db")
 MY_UID = os.getuid()
+DAEMON_PID = os.getppid()     # its proxy tunnels run in the daemon
 UA = "citadel/1.0"
 
 cfg = {"interval": 2.0, "retentionDays": 30, "resolveHosts": [], "lists": []}
@@ -146,20 +147,81 @@ def apps_from(table):
     return apps
 
 
+def trim(cache, cap):
+    """Drop the oldest quarter once a cache passes cap (dicts keep insertion order)."""
+    if len(cache) > cap:
+        for k in list(cache)[:cap // 4]:
+            cache.pop(k, None)             # pool threads may delete concurrently
+
+
+# Digests of root-owned files survive restarts, so only new or updated system
+# programs are read again. Not the user's own files: anything running as the
+# user could write a forged digest for them into this user-owned store.
+DIGESTS = os.path.join(STATE, "digests.json")
+digests = None
+digests_state = {"dirty": False, "saved": 0.0}
+digests_lock = threading.Lock()
+
+
+def _digests():
+    global digests
+    if digests is None:
+        try:
+            with open(DIGESTS) as f:
+                d = json.load(f)
+            digests = {str(k): str(v) for k, v in d.items()} if isinstance(d, dict) else {}
+        except (OSError, ValueError):
+            digests = {}
+    return digests
+
+
+def save_digests(force=False):
+    """Write the digest store, at most once a minute and only when it changed."""
+    now = time.time()
+    if not digests_state["dirty"] or (not force and now - digests_state["saved"] < 60):
+        return
+    with digests_lock:
+        snap = dict(_digests())
+        digests_state["dirty"] = False
+    digests_state["saved"] = now
+    try:
+        os.makedirs(STATE, exist_ok=True)
+        with os.fdopen(os.open(DIGESTS + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w") as f:
+            json.dump(snap, f)
+        os.replace(DIGESTS + ".tmp", DIGESTS)
+    except OSError as e:
+        log("could not save digests: %s" % e)
+
+
 def file_digest(path, algo):
+    st = os.stat(path)
+    key = "%s|%s|%d|%d|%d|%d|%d" % (algo, path, st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)
+    keep = st.st_uid == 0
+    if keep:
+        with digests_lock:
+            hit = _digests().get(key)
+        if hit:
+            return hit
     h = hashlib.new(algo)
     with open(path, "rb") as f:
         for chunk in iter(lambda: f.read(1 << 20), b""):
             h.update(chunk)
-    return h.hexdigest()
+        if hasattr(os, "posix_fadvise"):
+            try:   # don't keep a 200 MB binary in page cache charged to Citadel
+                os.posix_fadvise(f.fileno(), 0, 0, os.POSIX_FADV_DONTNEED)
+            except OSError:
+                pass
+    digest = h.hexdigest()
+    if keep:
+        with digests_lock:
+            _digests()[key] = digest
+            trim(digests, 2000)
+            digests_state["dirty"] = True
+    return digest
 
 
 def sha256(path):
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        for chunk in iter(lambda: f.read(1 << 20), b""):
-            h.update(chunk)
-    return h.hexdigest()
+    return file_digest(path, "sha256")
 
 
 # ------------------------------------------------------------------ DNS
@@ -176,6 +238,7 @@ def _rdns(ip):
     except (OSError, UnicodeError):
         name = ""
     rdns_cache[ip] = (name, time.time())
+    trim(rdns_cache, 20000)
     rdns_pending.discard(ip)
 
 
@@ -302,6 +365,7 @@ def country(ip):
             cc = ""
     if r:
         geo_cache[ip] = cc
+        trim(geo_cache, 20000)
     return cc
 
 
@@ -317,9 +381,8 @@ def owner(ip):
         except Exception:
             org = ""
     if r:
-        if len(org_cache) > 20000:
-            org_cache.clear()
         org_cache[ip] = org
+        trim(org_cache, 20000)
     return org
 
 
@@ -502,6 +565,7 @@ def ip_list_match(ip):
                 if hit:
                     break
     ip_match_cache[ip] = hit
+    trim(ip_match_cache, 20000)
     return hit
 
 
@@ -765,9 +829,7 @@ def origin(pid, cg=""):
     if via and (via["id"] == me["id"] or via["name"] == me["name"]):
         out["via"] = None
     origin_cache[key] = out
-    if len(origin_cache) > 4000:
-        for k in list(origin_cache)[:1000]:
-            del origin_cache[k]
+    trim(origin_cache, 4000)
     return out
 
 
@@ -826,7 +888,8 @@ def script_hosts(path):
         if h not in hosts:
             hosts.append(h)
     script_host_cache[key] = hosts[:32]
-    return script_host_cache[key]
+    trim(script_host_cache, 2000)
+    return hosts[:32]
 
 
 def host_ips(host):
@@ -974,7 +1037,7 @@ def tick(hist, prev, table_cache):
              "up": r["up"], "down": r["down"], "upRate": up_rate, "downRate": down_rate,
              "new": p is None, "list": list_match(host, r["raddr"]) if not system else ""}
         c.update(origin_fields(r["pid"], r["cgroup"]) if (r["pid"] and not system) else EMPTY_ORIGIN)
-        if re.search(r"/citadel-proxy(\s|$)", c["cmd"]):
+        if r["pid"] == DAEMON_PID or re.search(r"/citadel-proxy(\s|$)", c["cmd"]):
             # Citadel's own proxy tunnels: the app's side is shown separately
             c.update(app="Citadel proxy", via="", viaId="", viaKind="")
         conns.append(c)
@@ -1044,6 +1107,7 @@ def main():
         if r:
             chunk = os.read(sys.stdin.fileno(), 65536)
             if not chunk:                      # parent closed stdin: shell gone
+                save_digests(force=True)
                 return
             buf += chunk
             while b"\n" in buf:
@@ -1072,4 +1136,5 @@ def main():
         if now - last_lists > 3600:            # daily refresh check (stale > 24 h)
             load_lists(download=False)
             last_lists = now
+        save_digests()
         next_tick = now + float(cfg["interval"])

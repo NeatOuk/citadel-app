@@ -333,6 +333,7 @@ def _check_trust(exe, key):
     except Exception as e:                                  # never let one program stop the checks
         t = {"level": "unknown", "reason": str(e)[:80]}
     trust_cache[key] = t
+    trim(trust_cache, 2000)
     _trust_pending.discard(key)
     return t
 

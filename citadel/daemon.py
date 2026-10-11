@@ -23,6 +23,7 @@ import time
 
 from . import model as M
 from . import platform as P
+from . import proxy as PX
 
 log = logging.getLogger("citadel")
 
@@ -133,7 +134,7 @@ class Daemon:
         self._forceSync, self._lastSyncAt, self._syncHandle = False, 0, None
         self._jobs = asyncio.Queue()
         self._explainQueue = asyncio.Queue()
-        self._monitor = self._proxy = None
+        self._monitor = self._proxy = None   # _proxy: the in-process proxy's loop tasks while it runs
         self._dirty = set()
         self._listeners = []            # callables(event dict)
         self._saveHandle = None
@@ -437,8 +438,9 @@ class Daemon:
         return d
 
     def _is_own(self, c):
-        """A connection of Citadel's own proxy process (its upstream tunnels)."""
-        return c.get("app") == "Citadel proxy" or bool(re.search(r"/citadel-proxy(\s|$)", c.get("cmd") or ""))
+        """A connection of Citadel's own proxy (its upstream tunnels), in the daemon or the plugin's process."""
+        return (c.get("app") == "Citadel proxy" or c.get("pid") == os.getpid()
+                or bool(re.search(r"/citadel-proxy(\s|$)", c.get("cmd") or "")))
 
     def _silent_source(self, c, d):
         if d["source"] == "blocklist":
@@ -1268,39 +1270,46 @@ class Daemon:
             self.changed("enforceActive", "enforceDrops", "helperVersion", "helperLogging")
         self._run(["status"], done)
 
-    # ------------------------------------------------------------ proxy process
+    # ------------------------------------------------------------ proxy (in this process)
     async def _run_proxy(self):
+        PX.sink = self._safe_proxy_line
+        state = {"checkEvery": 30}
         while True:
-            if not self.proxies or self.pluginActive:
-                await asyncio.sleep(1)
-                continue
-            try:
-                self._proxy = await asyncio.create_subprocess_exec(
-                    sys.executable, self.p.proxy, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE)
-            except OSError as e:
-                log.warning("proxy could not start: %s", e)
-                await asyncio.sleep(3)
-                continue
-            self._configure_proxy()
-            while True:
-                line = await self._proxy.stdout.readline()
-                if not line:
-                    break
-                try:
-                    self._on_proxy_line(json.loads(line))
-                except ValueError:
-                    continue
-            await self._proxy.wait()
-            await asyncio.sleep(3)
+            want = bool(self.proxies) and self.loaded and not self.pluginActive
+            if want and not self._proxy:
+                self._proxy = [asyncio.create_task(PX.health_loop(state)), asyncio.create_task(PX.stats_loop())]
+                self._configure_proxy()
+            elif not want and self._proxy:
+                self._stop_proxy()
+            await asyncio.sleep(1)
+
+    def _stop_proxy(self):
+        for t in self._proxy or []:
+            t.cancel()
+        self._proxy = None
+        PX.close_all()
 
     def _configure_proxy(self):
-        pr = self._proxy
-        if not self.loaded or not pr or pr.returncode is not None:
+        if not self._proxy:
             return
-        if not self.proxies:
-            pr.stdin.close()                      # it exits when stdin closes
-            return
-        pr.stdin.write((json.dumps({"cmd": "config", "checkEvery": 30, "proxies": self.proxies}) + "\n").encode())
+        cfg = {"checkEvery": 30, "proxies": copy.deepcopy(self.proxies)}
+
+        async def apply():
+            try:
+                await PX.apply_config(cfg)
+                if not self._proxy:                  # stopped meanwhile: don't keep the ports
+                    PX.close_all()
+                    return
+                await PX.report_status()             # new proxies get a status at once
+            except Exception as e:
+                log.warning("proxy config failed: %s", e)
+        asyncio.get_running_loop().create_task(apply())
+
+    def _safe_proxy_line(self, m):
+        try:
+            self._on_proxy_line(m)
+        except Exception:                            # never kill the proxy's loops
+            log.exception("proxy event failed: %r", m)
 
     def _on_proxy_line(self, m):
         t = m.get("type")
@@ -1376,9 +1385,10 @@ class Daemon:
     def checkProxy(self, id):
         self.proxyCheck = dict(self.proxyCheck, **{id: {"pending": True}})
         self.changed("proxyCheck")
-        pr = self._proxy
-        if pr and pr.returncode is None:
-            pr.stdin.write((json.dumps({"cmd": "check", "id": id}) + "\n").encode())
+        if self._proxy:
+            async def check():
+                self._on_proxy_line(dict(await PX.health(str(id), full=True), type="check"))
+            asyncio.get_running_loop().create_task(check())
 
     def setDefaultRoute(self, route):
         self.defaultRoute = route if route == "direct" or any(x["id"] == route for x in self.proxies) else "direct"
@@ -1491,7 +1501,8 @@ class Daemon:
             self._syncHandle.cancel()
             self._syncHandle = None
         self.pluginActive = True
-        for proc in (self._monitor, self._proxy):
+        self._stop_proxy()                         # the plugin's own proxy takes the ports
+        for proc in (self._monitor,):
             if proc and proc.returncode is None:
                 try:
                     if proc.stdin:
@@ -1533,7 +1544,8 @@ class Daemon:
         for t in self._tasks:
             t.cancel()
         await asyncio.gather(*self._tasks, return_exceptions=True)
-        procs = [p for p in (self._monitor, self._proxy) + tuple(self._notifications.values()) if p and p.returncode is None]
+        self._stop_proxy()
+        procs = [p for p in (self._monitor,) + tuple(self._notifications.values()) if p and p.returncode is None]
         for proc in procs:
             try:
                 if proc.stdin:
