@@ -29,14 +29,15 @@ from .common import _run                                  # noqa: F401
 
 # ------------------------------------------------------------------ ss parsing
 
-USERS = re.compile(r'users:\(\("([^"]*)",pid=(\d+),fd=\d+')
 UIDF = re.compile(r"\buid:(\d+)")
 CGF = re.compile(r"\bcgroup:(\S+)")
+INOF = re.compile(r"\bino:(\d+)")
+sock_owner = {}               # socket inode -> (pid, comm) of a process holding it
 
 
 def parse_ss(args, proto):
     try:
-        text = subprocess.run(["ss", "-H", "-n", "-p", "-e", "--cgroup"] + args,
+        text = subprocess.run(["ss", "-H", "-n", "-e", "--cgroup"] + args,
                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                               text=True, timeout=10).stdout
     except (OSError, subprocess.TimeoutExpired):
@@ -69,17 +70,86 @@ def parse_ss(args, proto):
         raddr, rport = split_addr(toks[3])
         if not raddr or rport == 0 or raddr in ("*", "0.0.0.0", "::"):
             continue
-        m = USERS.search(line)
-        comm, pid = (m.group(1), int(m.group(2))) if m else ("", 0)
+        m = INOF.search(line)
+        ino = int(m.group(1)) if m else 0
         m = UIDF.search(line)
         uid = int(m.group(1)) if m else 0
         m = CGF.search(line)
         cg = m.group(1) if m else ""
         cur = {"proto": proto, "state": state, "laddr": laddr, "lport": lport,
-               "raddr": raddr, "rport": rport, "comm": comm, "pid": pid,
-               "uid": uid, "cgroup": cg, "up": 0, "down": 0}
+               "raddr": raddr, "rport": rport, "comm": "", "pid": 0,
+               "uid": uid, "cgroup": cg, "ino": ino, "up": 0, "down": 0}
         rows.append(cur)
+    resolve_owners(rows)
     return rows
+
+
+def _fd_sockets(pid):
+    """Inodes of the sockets open in a process (empty if it isn't ours to read)."""
+    out = set()
+    try:
+        fds = os.listdir("/proc/%d/fd" % pid)
+    except OSError:
+        return out
+    for fd in fds:
+        try:
+            link = os.readlink("/proc/%d/fd/%s" % (pid, fd))
+        except OSError:
+            continue
+        if link.startswith("socket:["):
+            out.add(int(link[8:-1]))
+    return out
+
+
+def _own_pids():
+    try:
+        return [int(d) for d in os.listdir("/proc") if d.isdigit() and os.stat("/proc/" + d).st_uid == MY_UID]
+    except OSError:
+        return []
+
+
+def resolve_owners(rows):
+    """pid and process name of each of the user's sockets, as `ss -p` gives,
+    without reading every process's fds on every tick: known sockets come
+    from a cache, new ones are looked up among the processes of the socket's
+    cgroup first, then (if it moved) among all of the user's processes."""
+    want = {}
+    for r in rows:
+        if r["uid"] != MY_UID or not r["ino"]:
+            continue
+        o = sock_owner.get(r["ino"])
+        if o and (o[0] == 0 or os.path.exists("/proc/%d" % o[0])):
+            r["pid"], r["comm"] = o
+        else:
+            want.setdefault(r["cgroup"], set()).add(r["ino"])
+    missing = set().union(*want.values()) if want else set()
+    found = {}
+    for cg, inos in want.items():
+        pids = [int(x) for x in read("/sys/fs/cgroup" + cg + "/cgroup.procs").split() if x.isdigit()]
+        _find_owners(pids, missing, found)
+    if missing:
+        _find_owners(_own_pids(), missing, found)
+    for ino in missing:
+        found[ino] = (0, "")                   # held by nobody we can read: ss -p shows none either
+    for r in rows:
+        if r["ino"] in found:
+            r["pid"], r["comm"] = found[r["ino"]]
+    live = {r["ino"] for r in rows}
+    for ino in [i for i in sock_owner if i not in live]:
+        del sock_owner[ino]
+    sock_owner.update(found)
+
+
+def _find_owners(pids, missing, found):
+    for pid in pids:
+        if not missing:
+            return
+        hit = _fd_sockets(pid) & missing
+        if hit:
+            comm = read("/proc/%d/comm" % pid).strip()
+            for ino in hit:
+                found[ino] = (pid, comm)
+            missing -= hit
 
 
 def sockets():
@@ -506,19 +576,37 @@ def boot_time():
 BOOT = boot_time()
 
 
+_loadavg = {"fd": None}
+
+
 def last_pid():
-    """The most recently allocated pid or thread id (last field of /proc/loadavg)."""
+    """The most recently allocated pid or thread id (last field of /proc/loadavg).
+    The file stays open: pread regenerates it for ~1 us instead of an open."""
     try:
-        return int(read("/proc/loadavg").split()[-1])
-    except (ValueError, IndexError):
+        if _loadavg["fd"] is None:
+            _loadavg["fd"] = os.open("/proc/loadavg", os.O_RDONLY)
+        return int(os.pread(_loadavg["fd"], 128, 0).split()[-1])
+    except (OSError, ValueError, IndexError):
         return -1
+
+
+TGID = re.compile(rb"\nTgid:\s*(\d+)")
 
 
 def new_pids(after, upto):
     """Processes (not threads) among the ids allocated since the last look."""
     out = set()
     for pid in range(after + 1, upto + 1):
-        m = re.search(r"^Tgid:\s*(\d+)", read("/proc/%d/status" % pid), re.M)
+        try:
+            fd = os.open("/proc/%d/status" % pid, os.O_RDONLY)
+        except OSError:
+            continue                           # already gone
+        try:
+            m = TGID.search(os.read(fd, 1024))
+        except OSError:
+            m = None
+        finally:
+            os.close(fd)
         if m and int(m.group(1)) == pid:
             out.add(pid)
     return out
