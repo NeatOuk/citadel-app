@@ -103,6 +103,10 @@ def parse_lsof(text):
 _lsof_cache = {"ts": 0, "rows": []}
 
 
+def sockets():
+    return parse_ss([], "tcp") + parse_ss([], "udp")
+
+
 def parse_ss(args, proto):
     """Same shape as linux.parse_ss: established/connecting TCP, connected UDP."""
     if time.time() - _lsof_cache["ts"] > 0.5:

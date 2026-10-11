@@ -55,6 +55,8 @@ def parse_ss(args, proto):
                     cur["down"] = int(m.group(1))
             continue
         toks = line.split()
+        if toks[0] in ("tcp", "udp"):                # several protocols: ss prints the Netid first
+            proto, toks = toks[0], toks[1:]
         # tcp with state filter: Recv-Q Send-Q Local Peer ...
         # (when several states are requested, ss prints the state first)
         if not toks[0].isdigit():
@@ -78,6 +80,11 @@ def parse_ss(args, proto):
                "uid": uid, "cgroup": cg, "up": 0, "down": 0}
         rows.append(cur)
     return rows
+
+
+def sockets():
+    """Established/connecting TCP and connected UDP, from one ss run (-p walks every process's fds)."""
+    return parse_ss(["-t", "-u", "-i", "state", "established", "state", "syn-sent"], "")
 
 
 def proc_table():
@@ -499,46 +506,76 @@ def boot_time():
 BOOT = boot_time()
 
 
+def last_pid():
+    """The most recently allocated pid or thread id (last field of /proc/loadavg)."""
+    try:
+        return int(read("/proc/loadavg").split()[-1])
+    except (ValueError, IndexError):
+        return -1
+
+
+def new_pids(after, upto):
+    """Processes (not threads) among the ids allocated since the last look."""
+    out = set()
+    for pid in range(after + 1, upto + 1):
+        m = re.search(r"^Tgid:\s*(\d+)", read("/proc/%d/status" % pid), re.M)
+        if m and int(m.group(1)) == pid:
+            out.add(pid)
+    return out
+
+
+def remember(pid, now):
+    try:
+        if os.stat("/proc/%d" % pid).st_uid != MY_UID:
+            return
+    except OSError:
+        return
+    d = describe(pid)
+    if not d:
+        return
+    cg = read("/proc/%d/cgroup" % pid).strip()
+    cg = cg.split("::", 1)[1].lstrip("/") if "::" in cg else ""
+    o = origin(pid, cg) or {}
+    # exact start from /proc/<pid>/stat, not the moment this scan saw it
+    started = BOOT + d["start"] / float(CLK_TCK)
+    rec = {"pid": pid, "ppid": d["ppid"], "start": min(now, started), "end": None, "exe": d["exe"],
+           "comm": d["comm"], "name": d["name"], "kind": d["kind"], "cgroup": cg, "args": d["args"],
+           "origin": o, "hosts": hosts_in_args(d["args"]),
+           "scriptHosts": script_hosts(d["id"]) if d["kind"] == "script" else []}
+    with proc_lock:
+        proc_seen[pid] = rec
+
+
 def process_watcher():
     """Every 50 ms, remember new processes of this user with their origin,
-    so a connection can still be attributed after the process exits."""
-    known = set()
+    so a connection can still be attributed after the process exits.
+    A look costs one read of /proc/loadavg; only new pids are opened, and
+    the full /proc listing (for exits) runs once a second."""
+    known, last, full_at = set(), -1, 0.0
     while True:
-        try:
-            pids = {int(d) for d in os.listdir("/proc") if d.isdigit()}
-        except OSError:
-            time.sleep(1)
-            continue
-        now = time.time()
-        for pid in pids - known:
+        now, lp = time.time(), last_pid()
+        gone = set()
+        if now - full_at >= 1 or last < 0 or lp < last or lp - last > 4096:   # also: pid wrap, huge bursts
             try:
-                if os.stat("/proc/%d" % pid).st_uid != MY_UID:
-                    continue
+                pids = {int(d) for d in os.listdir("/proc") if d.isdigit()}
             except OSError:
+                time.sleep(1)
                 continue
-            d = describe(pid)
-            if not d:
-                continue
-            cg = read("/proc/%d/cgroup" % pid).strip()
-            cg = cg.split("::", 1)[1].lstrip("/") if "::" in cg else ""
-            o = origin(pid, cg) or {}
-            # exact start from /proc/<pid>/stat, not the moment this scan saw it
-            started = BOOT + d["start"] / float(CLK_TCK)
-            rec = {"pid": pid, "ppid": d["ppid"], "start": min(now, started), "end": None, "exe": d["exe"],
-                   "comm": d["comm"], "name": d["name"], "kind": d["kind"], "cgroup": cg, "args": d["args"],
-                   "origin": o, "hosts": hosts_in_args(d["args"]),
-                   "scriptHosts": script_hosts(d["id"]) if d["kind"] == "script" else []}
-            with proc_lock:
-                proc_seen[pid] = rec
+            new, gone, known, full_at = pids - known, known - pids, pids, now
+        else:
+            new = new_pids(last, lp) - known if lp != last else set()
+            known |= new
+        last = lp
+        for pid in new:
+            remember(pid, now)
         with proc_lock:
-            for pid in known - pids:
+            for pid in gone:
                 r = proc_seen.get(pid)
                 if r and r["end"] is None:
                     r["end"] = now
             for pid in [p for p, r in proc_seen.items() if r["end"] and now - r["end"] > 180]:
                 del proc_seen[pid]
-        known = pids
-        time.sleep(0.05)          # a scan costs ~0.1 ms, so 20/s is ~0.2% of a core
+        time.sleep(0.05)
 
 
 def proc_exe(pid):

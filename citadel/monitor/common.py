@@ -1012,8 +1012,7 @@ def app_name(exe, comm, cg):
 
 def tick(hist, prev, table_cache):
     now = time.time()
-    rows = B.parse_ss(["-t", "-i", "state", "established", "state", "syn-sent"], "tcp")
-    rows += B.parse_ss(["-u", "state", "established"], "udp")
+    rows = B.sockets()
     table = B.proc_table()
     apps = apps_from(table)
     conns = []
