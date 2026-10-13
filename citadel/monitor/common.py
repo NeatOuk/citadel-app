@@ -8,9 +8,10 @@ daemon (or the Omarchy plugin's Service) reads:
   {"type":"lists", ...}     blocklist subscription status (+ IP CIDRs)
   {"type":"geoip", ...}     GeoIP database status
   {"type":"log", ...}       non-fatal errors
+  {"type":"archived","file","month","flows"}  last month's history moved to history-YYYYMM.db
 
 It reads JSON commands on stdin, one per line:
-  {"cmd":"config","interval":2,"retentionDays":30,"resolveHosts":[...],
+  {"cmd":"config","interval":2,"resolveHosts":[...],
    "lists":[{"id","url","kind":"ip"|"domain","enabled"}],"frontPort":0}
      frontPort: Citadel's front door; connections to it are shown (the daemon names them)
   {"cmd":"refreshLists"}   {"cmd":"geoipDownload"}   {"cmd":"stats"}
@@ -60,7 +61,7 @@ MY_UID = os.getuid()
 DAEMON_PID = os.getppid()     # its proxy tunnels run in the daemon
 UA = "citadel/1.0"
 
-cfg = {"interval": 2.0, "retentionDays": 30, "resolveHosts": [], "lists": [], "frontPort": 0}
+cfg = {"interval": 2.0, "resolveHosts": [], "lists": [], "frontPort": 0}
 out_lock = threading.Lock()
 
 
@@ -602,9 +603,20 @@ def _run(cmd, timeout=5):
 
 # ------------------------------------------------------------------ history
 
+def month_of(t):
+    return time.strftime("%Y%m", time.localtime(t))
+
+
 class History:
+    """history.db holds the current month. On the first tick of a new month it
+    is archived as history-YYYYMM.db (kept, never deleted) and a fresh one starts."""
+
     def __init__(self):
         os.makedirs(STATE, exist_ok=True)
+        self._open()
+
+    def _open(self, now=None):
+        now = now or time.time()
         self.db = sqlite3.connect(HISTORY_DB, check_same_thread=False)
         self.db.executescript("""
             PRAGMA journal_mode=WAL;
@@ -618,8 +630,42 @@ class History:
         cols = {r[1] for r in self.db.execute("PRAGMA table_info(flows)")}
         if "via" not in cols:                       # added in 1.2
             self.db.execute("ALTER TABLE flows ADD COLUMN via TEXT DEFAULT ''")
+        self.db.execute("CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT)")
+        row = self.db.execute("SELECT v FROM meta WHERE k='month'").fetchone()
+        if row is None:                             # a new file, or one from before monthly archives
+            self.db.execute("INSERT INTO meta(k,v) VALUES('month',?)", (month_of(now),))
+            self.db.commit()
+        self.month = row[0] if row else month_of(now)
         self.ids = {}           # socket key -> row id
         self.last_prune = 0
+
+    def rotate(self, now):
+        """Archive the month that ended, once a tick falls in a new one.
+        -> {"file", "month", "flows"} or None."""
+        if month_of(now) == self.month:
+            return None
+        flows = self.db.execute("SELECT COUNT(*) FROM flows").fetchone()[0]
+        self.db.commit()
+        self.db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        self.db.close()
+        dst = os.path.join(STATE, "history-%s.db" % self.month)
+        n = 2
+        while os.path.exists(dst):                  # the clock went back: never overwrite an archive
+            dst = os.path.join(STATE, "history-%s-%d.db" % (self.month, n))
+            n += 1
+        try:
+            os.rename(HISTORY_DB, dst)
+        except OSError:
+            self._open()                            # keep recording into history.db; retried next tick
+            raise
+        for ext in ("-wal", "-shm"):
+            try:
+                os.unlink(HISTORY_DB + ext)
+            except OSError:
+                pass
+        done = {"file": dst, "month": self.month, "flows": flows}
+        self._open(now)
+        return done
 
     def update(self, conns, now):
         cur = self.db.cursor()
@@ -642,9 +688,7 @@ class History:
         for k in list(self.ids):
             if k not in seen:
                 del self.ids[k]
-        if now - self.last_prune > 3600:
-            cutoff = now - 86400 * max(1, int(cfg.get("retentionDays") or 30))
-            cur.execute("DELETE FROM flows WHERE last < ?", (cutoff,))
+        if now - self.last_prune > 3600:            # the 1 s traffic samples only feed the last hour's graph
             cur.execute("DELETE FROM samples WHERE t < ?", (int(now) - 86400 * 2,))
             self.last_prune = now
         self.db.commit()
@@ -1091,7 +1135,7 @@ def tick(hist, prev, table_cache):
 def handle(cmd, hist):
     c = cmd.get("cmd")
     if c == "config":
-        for k in ("interval", "retentionDays", "resolveHosts", "lists", "frontPort"):
+        for k in ("interval", "resolveHosts", "lists", "frontPort"):
             if k in cmd:
                 cfg[k] = cmd[k]
         try:
@@ -1144,6 +1188,12 @@ def main():
                 except Exception as e:
                     log("command failed: %s" % e)
             continue
+        try:
+            archived = hist.rotate(time.time())
+            if archived:
+                emit(dict(archived, type="archived"))
+        except Exception as e:
+            log("archiving history failed: %s" % e)
         try:
             prev = tick(hist, prev, None)
         except Exception as e:

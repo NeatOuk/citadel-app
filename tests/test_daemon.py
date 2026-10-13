@@ -417,6 +417,20 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.d.conns = shown                   # no address of its own: never in firewall rules ("bad address ''")
         self.assertEqual(self.d._firewall_conns(), [])
 
+    async def test_monthly_history_archive_is_announced(self):
+        from citadel import daemon as D
+        sent = []
+
+        async def notify(title, body, actions):
+            sent.append((title, body))
+        saved = D.P.notify
+        D.P.notify = notify
+        self.addCleanup(setattr, D.P, "notify", saved)
+        self.d._on_monitor_line({"type": "archived", "file": "/x/history-202610.db", "month": "202610", "flows": 82125})
+        self.assertTrue(await self.c.wait_for(lambda s: sent, 3))
+        self.assertEqual(sent[0], ("Citadel: October 2026 history archived",
+                                   "82,125 connections saved in history-202610.db. history.db now records the new month."))
+
     @unittest.skipUnless(sys.platform.startswith("linux"), "the Omarchy plugin exists on Linux only")
     async def test_pauses_while_the_omarchy_plugin_runs(self):
         self.feed(tick([conn("k1", "/usr/bin/curl", "1.1.1.1", new=False)]))
