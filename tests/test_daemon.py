@@ -131,6 +131,7 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
                "CITADEL_HELPER": t + "/helper", "CITADEL_PKEXEC": "", "FAKE_TICKS": self.ticks,
                "CITADEL_HELPER_TRANSPORT": "pkexec",              # the fake Linux helper, on macOS too
                "FAKE_HELPER_LOG": self.hlog, "CITADEL_AGENT_FILE": t + "/agent", "PATH": "/usr/bin:/bin",
+               "XDG_DATA_HOME": t + "/data",                       # menu launchers (citadel/launchers.py)
                # detect only this test's fake plugin, not a real one running on the machine
                "CITADEL_PLUGIN_MARKER": "fake-plugin-monitor-%d" % os.getpid()}
         self.saved_env = {k: os.environ.get(k) for k in env}
@@ -385,6 +386,36 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.d.monitorUp = False
         self.assertFalse(await asyncio.wait_for(check(50006, "93.184.215.14", 443, "ok.example"), 0.5))
         self.assertEqual(self.d.decisionLog[0]["source"], "monitor not running")
+
+    async def test_front_door_routes_by_the_name_the_browser_asked_for(self):
+        from citadel import proxy as PX
+        self.d.prefs["notify"] = False
+        self.feed(tick([]))
+        self.assertTrue(await self.c.wait_for(lambda s: s.get("ticks", 0) >= 1))
+        r = await self.c.call("saveProxy", {"name": "Office", "type": "http", "host": "127.0.0.1", "port": 1}, "", "")
+        pid = r["result"]["id"]
+        await self.c.call("addRule", {"app": "/usr/bin/curl", "host": "*", "action": "allow", "route": pid})
+        await self.c.call("addRule", {"app": "/usr/bin/curl", "host": "intranet.example", "action": "allow", "route": "direct"})
+        await self.c.call("addRule", {"app": "/usr/bin/curl", "host": "blocked.example", "action": "deny"})
+        browser = conn("f1", "/usr/bin/curl", "127.0.0.1", 47100, scope="loopback", lport=51000)
+
+        def monitor(obj):
+            if obj.get("cmd") == "match":
+                asyncio.get_running_loop().call_soon(self.d._on_monitor_line, {
+                    "type": "match", "id": obj["id"], "conn": dict(browser, host=obj["host"]) if obj["lport"] else None})
+        self.d._send = monitor
+        PX.front["port"] = 47100
+        self.addCleanup(PX.front.update, port=0)
+        check = self.d._check_front
+        self.assertEqual(await check(51000, "myid.cimb.com", 8543), pid)
+        self.assertEqual(await check(51001, "intranet.example", 443), "direct")
+        self.assertIsNone(await check(51002, "blocked.example", 443))
+        self.assertIsNone(await check(0, "x.example", 443))                    # the monitor can't find the browser
+        # the monitor reports the browser's socket to 127.0.0.1:47100; it is shown by where it went
+        shown = self.d._named_front_conns([browser])
+        self.assertEqual((shown[0]["host"], shown[0]["rport"], shown[0]["raddr"]), ("myid.cimb.com", 8543, ""))
+        self.d.conns = shown                   # no address of its own: never in firewall rules ("bad address ''")
+        self.assertEqual(self.d._firewall_conns(), [])
 
     @unittest.skipUnless(sys.platform.startswith("linux"), "the Omarchy plugin exists on Linux only")
     async def test_pauses_while_the_omarchy_plugin_runs(self):

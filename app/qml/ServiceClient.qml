@@ -65,6 +65,7 @@ QtObject {
   property string defaultRoute: "direct"
   property var proxyStatus: ({})
   property var proxyLog: []
+  property var launchers: []
   property var proxyCarried: []
   property var proxyCheck: ({})
   property string proxyError: ""

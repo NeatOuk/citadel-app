@@ -120,5 +120,79 @@ class HostName(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.targets, [DST])
 
 
+class FrontDoor(unittest.IsolatedAsyncioTestCase):
+    """The SOCKS5 port routed browsers are started with: they send the host name."""
+
+    async def asyncSetUp(self):
+        self.targets, self.asked = [], []
+        saved = (PX.sink, PX.check_front, dict(PX.proxies))
+        PX.sink = lambda m: None
+
+        def restore():
+            PX.sink, PX.check_front = saved[0], saved[1]
+            PX.proxies.clear()
+            PX.proxies.update(saved[2])
+        self.addCleanup(restore)
+        self.upstream = await asyncio.start_server(HostName.fake_socks5.__get__(self), "127.0.0.1", 0)
+        self.echo = await asyncio.start_server(self.echo_server, "127.0.0.1", 0)
+        PX.proxies["p1"] = {"id": "p1", "type": "socks5", "host": "127.0.0.1",
+                            "port": self.upstream.sockets[0].getsockname()[1]}
+        await PX.set_front(0)
+        port = self.free_port()
+        await PX.set_front(port)
+        self.addAsyncCleanup(PX.set_front, 0)
+        for srv in (self.upstream, self.echo):
+            self.addAsyncCleanup(HostName._close, srv)
+
+    @staticmethod
+    def free_port():
+        import socket
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            return s.getsockname()[1]
+
+    @staticmethod
+    async def echo_server(r, w):
+        w.write(await r.read(65536))
+        await w.drain()
+        w.close()
+
+    async def browser(self, host, port, route):
+        """A browser asking the front door for host:port; -> (SOCKS reply code, echoed bytes)."""
+        async def check(lport, h, p):
+            self.asked.append((lport, h, p))
+            return route
+        PX.check_front = check
+        r, w = await asyncio.open_connection("127.0.0.1", PX.front["port"])
+        try:
+            name = host.encode()
+            w.write(b"\x05\x01\x00" + b"\x05\x01\x00\x03" + bytes([len(name)]) + name + struct.pack("!H", port))
+            await w.drain()
+            self.assertEqual(await r.readexactly(2), b"\x05\x00")
+            reply = await r.readexactly(10)
+            if reply[1] != 0:
+                return reply[1], b""
+            w.write(b"hello")
+            await w.drain()
+            return 0, await asyncio.wait_for(r.read(65536), 5)
+        finally:
+            w.close()
+
+    async def test_routed_name_goes_to_the_proxy_by_name(self):
+        self.assertEqual(await self.browser("myid.cimb.com", 8543, "p1"), (0, b"hello"))
+        self.assertEqual(self.targets, [("myid.cimb.com", 8543)])
+        self.assertEqual(self.asked[0][1:], ("myid.cimb.com", 8543))
+
+    async def test_direct_route_connects_here(self):
+        port = self.echo.sockets[0].getsockname()[1]
+        self.assertEqual(await self.browser("localhost", port, "direct"), (0, b"hello"))
+        self.assertEqual(self.targets, [])
+
+    async def test_refused_or_missing_proxy_never_goes_direct(self):
+        self.assertEqual((await self.browser("blocked.example", 443, None))[0], PX.SOCKS_DENIED)
+        self.assertEqual((await self.browser("x.example", 443, "gone"))[0], PX.SOCKS_DENIED)
+        self.assertEqual(self.targets, [])
+
+
 if __name__ == "__main__":
     unittest.main()
