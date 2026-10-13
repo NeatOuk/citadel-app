@@ -22,6 +22,8 @@ except ImportError:
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 QML = os.path.join(HERE, "..", "app", "qml")
+sys.path.insert(0, os.path.join(HERE, ".."))
+from citadel.daemon import DEFAULT_PREFS  # noqa: E402
 
 SLICE = "user.slice/user-1000.slice/user@1000.service/app.slice/"
 CONN = {"key": "k1", "exe": "/usr/bin/curl", "app": "curl", "raddr": "93.184.216.34", "rport": 443, "host": "example.com",
@@ -43,6 +45,9 @@ STATE = {
                  "auth": False, "verifyTls": True}],
     "proxyStatus": {"p1": {"ok": True, "ms": 12, "error": "", "ts": 1000}},
     "proxyLog": [{"ts": 1000, "proxy": "Office", "dst": "1.2.3.4", "port": 443, "error": "refused"}],
+    "prefs": dict(DEFAULT_PREFS, proxyDns=True),
+    "launchers": [{"exe": "/opt/microsoft/msedge/msedge", "name": "msedge", "file": "/x.desktop", "state": "managed", "restart": True},
+                  {"exe": "/usr/bin/brave", "name": "brave", "file": "/y.desktop", "state": "own", "restart": False}],
     "recentShort": [{"conn": dict(CONN, key="s1", short=True, confidence="likely", ts=1000), "decision":
                      {"verdict": "prompt", "source": "none", "rule": None}, "count": 2}],
     "decisionLog": [{"ts": 1000, "app": "curl", "exe": "/usr/bin/curl", "via": "", "dest": "example.com", "ip": "93.184.216.34",

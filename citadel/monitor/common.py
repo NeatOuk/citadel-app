@@ -11,7 +11,8 @@ daemon (or the Omarchy plugin's Service) reads:
 
 It reads JSON commands on stdin, one per line:
   {"cmd":"config","interval":2,"retentionDays":30,"resolveHosts":[...],
-   "lists":[{"id","url","kind":"ip"|"domain","enabled"}]}
+   "lists":[{"id","url","kind":"ip"|"domain","enabled"}],"frontPort":0}
+     frontPort: Citadel's front door; connections to it are shown (the daemon names them)
   {"cmd":"refreshLists"}   {"cmd":"geoipDownload"}   {"cmd":"stats"}
   {"cmd":"match","id","lport","raddr","rport","host"}  ->  {"type":"match","id","conn"}
      a routed app's new connection, named by the host it asked the proxy for
@@ -59,7 +60,7 @@ MY_UID = os.getuid()
 DAEMON_PID = os.getppid()     # its proxy tunnels run in the daemon
 UA = "citadel/1.0"
 
-cfg = {"interval": 2.0, "retentionDays": 30, "resolveHosts": [], "lists": []}
+cfg = {"interval": 2.0, "retentionDays": 30, "resolveHosts": [], "lists": [], "frontPort": 0}
 out_lock = threading.Lock()
 
 
@@ -1055,8 +1056,8 @@ def tick(hist, prev, table_cache):
     conns = []
     for r in rows:
         kind = classify(r["raddr"])
-        if kind in ("loopback", "multicast"):
-            continue
+        if kind == "multicast" or (kind == "loopback" and not (cfg["frontPort"] and r["rport"] == cfg["frontPort"])):
+            continue                           # loopback, except browsers going through Citadel's front door
         exe = table.get(r["pid"], ("", ""))[0].replace(" (deleted)", "") if r["pid"] else ""
         conns.append(make_conn(r, exe, prev, now))
     nextprev = {c["key"]: {"ts": now, "up": c["up"], "down": c["down"], "host": c["host"],
@@ -1090,7 +1091,7 @@ def tick(hist, prev, table_cache):
 def handle(cmd, hist):
     c = cmd.get("cmd")
     if c == "config":
-        for k in ("interval", "retentionDays", "resolveHosts", "lists"):
+        for k in ("interval", "retentionDays", "resolveHosts", "lists", "frontPort"):
             if k in cmd:
                 cfg[k] = cmd[k]
         try:

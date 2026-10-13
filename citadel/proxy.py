@@ -65,6 +65,14 @@ sink = _stdout                # the daemon sets its own handler
 # Set: the proxy is given the name the app asked for and resolves it with its
 # own DNS. None (the plugin, or the option off): names must resolve here first.
 check_name = None
+# The front door: a SOCKS5 port that routed browsers are started with
+# (--proxy-server, see citadel/launchers.py), so they hand over the host name
+# themselves, even ones only the proxy's DNS knows. The daemon sets
+# `async (lport, host, port) -> route`, where route is "direct", a proxy id,
+# or None to refuse.
+check_front = None
+FRONT_PORT = 47100
+front = {"port": 0, "servers": []}
 
 
 def emit(obj):
@@ -430,10 +438,11 @@ async def apply_config(cfg):
 
 def close_all():
     """Stop listening on every port at once (the daemon pausing or stopping)."""
-    for srv in servers.values():
+    for srv in list(servers.values()) + [front["servers"]]:
         for s in srv:
             s.close()
     servers.clear()
+    front.update(port=0, servers=[])
     for cw, uw in list(live.items()):
         reset(cw)
         if uw is not None:
@@ -538,3 +547,112 @@ async def main():
     for t in tasks:
         t.cancel()
 
+
+
+# ------------------------------------------------------------------ front door
+
+async def set_front(port):
+    """Listen on 127.0.0.1:port for routed browsers (0: stop)."""
+    if port == front["port"]:
+        return
+    for srv in front["servers"]:
+        srv.close()
+    front.update(port=0, servers=[])
+    if port:
+        try:
+            front["servers"] = [await asyncio.start_server(front_handler, "127.0.0.1", port, reuse_address=True)]
+            front["port"] = port
+        except OSError as e:
+            emit({"type": "log", "msg": "cannot listen on 127.0.0.1:%d: %s" % (port, e)})
+
+
+SOCKS_DENIED, SOCKS_UNREACHABLE, SOCKS_BAD_CMD, SOCKS_BAD_ADDR = 2, 4, 7, 8
+
+
+def socks_reply(writer, code):
+    writer.write(b"\x05" + bytes([code]) + b"\x00\x01" + b"\x00" * 6)
+
+
+async def socks_request(reader, writer):
+    """Server side of a SOCKS5 CONNECT without login -> (host, port), or None after replying."""
+    ver, n = await readexactly(reader, 2)
+    methods = await readexactly(reader, n)
+    if ver != 5 or 0 not in methods:
+        writer.write(b"\x05\xff")
+        return None
+    writer.write(b"\x05\x00")
+    ver, cmd, _, atyp = await readexactly(reader, 4)
+    if atyp == 1:
+        host = str(ipaddress.ip_address(await readexactly(reader, 4)))
+    elif atyp == 4:
+        host = str(ipaddress.ip_address(await readexactly(reader, 16)))
+    elif atyp == 3:
+        host = (await readexactly(reader, (await readexactly(reader, 1))[0])).decode("ascii", "replace").rstrip(".")
+    else:
+        socks_reply(writer, SOCKS_BAD_ADDR)
+        return None
+    port = struct.unpack("!H", await readexactly(reader, 2))[0]
+    if cmd != 1:
+        socks_reply(writer, SOCKS_BAD_CMD)
+        return None
+    if atyp == 3 and not HOST_RE.match(host) or not port:
+        socks_reply(writer, SOCKS_BAD_ADDR)
+        return None
+    return host, port
+
+
+async def front_handler(creader, cwriter):
+    try:
+        req = await socks_request(creader, cwriter)
+        peer = cwriter.get_extra_info("peername")
+        check = check_front
+        if req is None or not peer or check is None:
+            if req is not None:
+                socks_reply(cwriter, SOCKS_DENIED)
+            await cwriter.drain()
+            cwriter.close()
+            return
+        host, port = req
+        route = await check(peer[1], host, port)
+        px = proxies.get(route) if route not in (None, "direct") else None
+        if route is None or (route != "direct" and px is None):
+            socks_reply(cwriter, SOCKS_DENIED)    # refused, or its proxy is gone: never direct
+            await cwriter.drain()
+            cwriter.close()
+            return
+    except (OSError, ConnectionError, asyncio.TimeoutError, asyncio.IncompleteReadError, ValueError):
+        cwriter.close()
+        return
+    live[cwriter] = None
+    try:
+        if px is None:
+            ureader, uwriter = await asyncio.wait_for(asyncio.open_connection(host, port), CONNECT_TIMEOUT)
+        else:
+            ureader, uwriter = await tunnel(px, host, port)
+    except (OSError, ConnectionError, asyncio.TimeoutError, asyncio.IncompleteReadError, ssl.SSLError) as e:
+        if px is not None:
+            emit({"type": "error", "id": px["id"], "dst": host, "port": port, "error": describe(e, px)})
+        live.pop(cwriter, None)
+        socks_reply(cwriter, SOCKS_UNREACHABLE)
+        try:
+            await cwriter.drain()
+        except (OSError, ConnectionError):
+            pass
+        cwriter.close()
+        return
+    if cwriter not in live:                    # stopped while connecting
+        uwriter.close()
+        return
+    live[cwriter] = uwriter
+    if px is not None:
+        counts[px["id"]] = counts.get(px["id"], 0) + 1
+    try:
+        socks_reply(cwriter, 0)
+        await asyncio.gather(pipe(creader, uwriter), pipe(ureader, cwriter))
+    finally:
+        live.pop(cwriter, None)
+        for w in (uwriter, cwriter):
+            try:
+                w.close()
+            except (OSError, RuntimeError):
+                pass
