@@ -120,9 +120,21 @@ def other_core_running(marker, own_paths):
         except OSError:
             continue
         for a in args[:3]:
-            if os.path.basename(a) == marker and os.path.realpath(a) not in own:
+            if os.path.basename(a) == marker and os.path.realpath(a) not in own and _in_plugin(a):
                 return True
     return False
+
+
+def _in_plugin(path):
+    """Is this monitor script the Omarchy plugin's (bin/ of a neat.citadel plugin),
+    not a checkout's or a test's? Those must not pause the installed core."""
+    if "/neat.citadel/" in path:
+        return True
+    try:
+        with open(os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(path))), "manifest.json")) as f:
+            return '"neat.citadel"' in f.read(4096)
+    except OSError:
+        return False
 
 
 def lookup_secret(pid):

@@ -502,5 +502,28 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.c.state["explanations"][key]["result"]["company"], "Example")
 
 
+
+@unittest.skipUnless(sys.platform.startswith("linux"), "the Omarchy plugin exists on Linux only")
+class PluginDetection(unittest.TestCase):
+    def test_only_the_plugins_monitor_pauses_the_core(self):
+        """Test runs and checkouts start their own citadel-monitor; they must not
+        pause the installed core (its firewall and proxy would stop)."""
+        import subprocess
+        from citadel.platform import linux as P
+        with tempfile.TemporaryDirectory() as tmp:
+            for where, plugin in (("neat.citadel/bin", True), ("checkout/libexec", False)):
+                script = os.path.join(tmp, where, "citadel-monitor-test-%d" % os.getpid())
+                os.makedirs(os.path.dirname(script))
+                with open(script, "w") as f:
+                    f.write("import time\ntime.sleep(30)\n")
+                proc = subprocess.Popen([sys.executable, script])
+                try:
+                    time.sleep(0.3)
+                    self.assertEqual(P.other_core_running(os.path.basename(script), []), plugin, where)
+                finally:
+                    proc.kill()
+                    proc.wait()
+
+
 if __name__ == "__main__":
     unittest.main()
