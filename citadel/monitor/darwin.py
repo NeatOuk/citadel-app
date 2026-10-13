@@ -103,8 +103,9 @@ def parse_lsof(text):
 _lsof_cache = {"ts": 0, "rows": []}
 
 
-def sockets():
-    return parse_ss([], "tcp") + parse_ss([], "udp")
+def sockets(sport=0):
+    rows = parse_ss([], "tcp") + parse_ss([], "udp")
+    return [r for r in rows if r["lport"] == sport] if sport else rows
 
 
 def parse_ss(args, proto):

@@ -152,9 +152,11 @@ def _find_owners(pids, missing, found):
             missing -= hit
 
 
-def sockets():
-    """Established/connecting TCP and connected UDP, from one ss run (-p walks every process's fds)."""
-    return parse_ss(["-t", "-u", "-i", "state", "established", "state", "syn-sent"], "")
+def sockets(sport=0):
+    """Established/connecting TCP and connected UDP, from one ss run (-p walks every process's fds).
+    sport: only the sockets on that local port."""
+    return parse_ss(["-t", "-u", "-i", "state", "established", "state", "syn-sent"]
+                    + (["sport", "=", ":%d" % sport] if sport else []), "")
 
 
 def proc_table():

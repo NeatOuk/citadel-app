@@ -60,6 +60,11 @@ def _stdout(obj):
 
 
 sink = _stdout                # the daemon sets its own handler
+# Resolve hostnames through proxy: the daemon sets this to
+# `async (lport, ip, port, name) -> bool`, whether the app may reach that name.
+# Set: the proxy is given the name the app asked for and resolves it with its
+# own DNS. None (the plugin, or the option off): names must resolve here first.
+check_name = None
 
 
 def emit(obj):
@@ -139,7 +144,7 @@ async def socks5_connect(reader, writer, px, ip, port):
     try:
         addr = ipaddress.ip_address(ip)
         atyp, packed = (b"\x01", addr.packed) if addr.version == 4 else (b"\x04", addr.packed)
-    except ValueError:                         # a verified host name (see sniff)
+    except ValueError:                         # a host name (see sniff)
         name = ip.encode("ascii")
         atyp, packed = b"\x03", bytes([len(name)]) + name
     writer.write(b"\x05\x01\x00" + atyp + packed + struct.pack("!H", port))
@@ -156,7 +161,7 @@ async def socks5_connect(reader, writer, px, ip, port):
 
 
 async def http_connect(reader, writer, px, ip, port):
-    host = "[%s]" % ip if ":" in ip else ip      # an IP, or a verified host name
+    host = "[%s]" % ip if ":" in ip else ip      # an IP, or a host name (see sniff)
     lines = ["CONNECT %s:%d HTTP/1.1" % (host, port), "Host: %s:%d" % (host, port)]
     cred = px.get("cred")
     if cred:
@@ -222,6 +227,9 @@ def reset(writer):
 # ClientHello's server name, or the HTTP Host header. The app chooses those
 # bytes, so the name is only used when it resolves to the IP the firewall
 # already let through; otherwise the tunnel goes to the IP as before.
+# With Resolve hostnames through proxy on (check_name), the name is not
+# resolved here at all: the daemon checks it against the app's policies, and
+# the proxy looks it up with its own DNS.
 
 HOST_RE = re.compile(r"^(?=.{1,253}$)([A-Za-z0-9_](?:[A-Za-z0-9_-]{0,61}[A-Za-z0-9])?)(\.[A-Za-z0-9_](?:[A-Za-z0-9_-]{0,61}[A-Za-z0-9])?)*\.?$")
 SNIFF_TIMEOUT = 1.0          # protocols where the server talks first get nothing
@@ -344,11 +352,34 @@ def make_handler(pid):
     return handle
 
 
+async def remote_name(name, ip, port, cwriter):
+    """The name to hand the proxy (Resolve hostnames through proxy), ip if there
+    is none, or None if the app may not reach it."""
+    check = check_name
+    if not name or not HOST_RE.match(name) or check is None:
+        return ip
+    try:
+        ipaddress.ip_address(name)
+        return ip                              # already an address
+    except ValueError:
+        pass
+    peer = cwriter.get_extra_info("peername")
+    if not peer or not await check(peer[1], ip, port, name.rstrip(".")):
+        return None
+    return name.rstrip(".")
+
+
 async def _serve(px, pid, ip, port, creader, cwriter):
     name, early = await sniff(creader)
-    target = await verified_name(name, ip) or ip
-    if name and target == ip:
-        emit({"type": "log", "msg": "%s does not resolve to %s; tunnelling to the address" % (name[:80], ip)})
+    if check_name is not None:
+        target = await remote_name(name, ip, port, cwriter)
+        if target is None:                     # the daemon logged the deny
+            reset(cwriter)
+            return
+    else:
+        target = await verified_name(name, ip) or ip
+        if name and target == ip:
+            emit({"type": "log", "msg": "%s does not resolve to %s; tunnelling to the address" % (name[:80], ip)})
     try:
         ureader, uwriter = await tunnel(px, target, port)
         if early:
