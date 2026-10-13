@@ -23,7 +23,7 @@ QtObject {
   property var lists: []
   property var defaultLists: []
   property var decisionLog: []
-  property var prefs: ({ interval: 2, alertTimeout: 90, alertDefault: "allow", retentionDays: 30, notify: true,
+  property var prefs: ({ interval: 2, alertTimeout: 90, alertDefault: "allow", notify: true,
                          catchShort: true, explainCommand: "", explainModel: "", explainAgent: "", proxyDns: false })
   property var conns: []
   property var apps: ({})

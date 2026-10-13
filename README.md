@@ -54,7 +54,7 @@ the same core, as a background service with its own window and tray icon.
 - **Traffic and history.**
   - Live connections per app, with rates, countries and why each one is allowed
     or blocked.
-  - 30 days of history: top apps, hosts and countries, and the decision log.
+  - History of every connection, archived monthly (history-YYYYMM.db): top apps, hosts and countries, and the decision log.
 - **Zones.** Link Wi-Fi or wired networks to zones, and Citadel switches policies
   as you move.
 - **Runs quietly in the background.** A user service that keeps working with the

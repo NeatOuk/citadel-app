@@ -149,7 +149,9 @@ On macOS the levels come from code signing and notarization: Apple, App Store, n
 - **Charts:** traffic over the last hour.
 - **Tops:** apps and hosts (today or 7 days), and countries today.
 - **Decision log:** every verdict, and who made it (you, a policy, a feed, a mode, the timeout).
-- **Storage:** kept in a local SQLite database for 30 days (adjustable).
+- **Storage:** a local SQLite database, `~/.local/share/citadel/history.db`, holding the current month.
+  - On the 1st of each month (or the first time Citadel runs in a new month) the past month is archived as `history-YYYYMM.db` beside it, and a desktop notification says so. Archives are never deleted; open them with any SQLite tool.
+  - History views show the current month's database, so early in a month they cover only the days since the 1st.
 
 ## 9. Threat feeds
 
