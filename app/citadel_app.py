@@ -21,6 +21,9 @@ from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 QML_DIR = os.environ.get("CITADEL_QML_DIR") or os.path.join(HERE, "qml")
+# Qt's QML disk cache trusts file timestamps, and packages built reproducibly
+# give every release the same ones, so an update would keep showing the old UI.
+os.environ.setdefault("QML_DISABLE_DISK_CACHE", "1")
 
 
 def runtime_dir():
