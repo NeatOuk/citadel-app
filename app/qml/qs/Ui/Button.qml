@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls as C
 import qs.Commons
+import qs.Commons as C   // Qt 6.12's QtQuick has its own Color type, which hides ours
 
 // Omarchy-style flat button: text, optional border, "selected" fill, tooltip.
 Item {
@@ -9,8 +10,8 @@ Item {
   property string tooltipText: ""
   property bool selected: false
   property bool bordered: false
-  property color foreground: Color.foreground
-  property color accent: Color.accent
+  property color foreground: C.Color.foreground
+  property color accent: C.Color.accent
   property string fontFamily: Style.font.family
   property real fontSize: Style.font.body
   property real horizontalPadding: Style.space(10)

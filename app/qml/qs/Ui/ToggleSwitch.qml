@@ -1,5 +1,6 @@
 import QtQuick
 import qs.Commons
+import qs.Commons as C   // Qt 6.12's QtQuick has its own Color type, which hides ours
 
 // A switch; `toggled()` asks the owner to flip `checked`.
 Item {
@@ -7,8 +8,8 @@ Item {
   property bool checked: false
   property bool busy: false
   property bool interactive: true
-  property color foreground: Color.foreground
-  property color accent: Color.accent
+  property color foreground: C.Color.foreground
+  property color accent: C.Color.accent
   signal toggled()
   implicitWidth: Style.space(40)
   implicitHeight: Style.space(22)
@@ -21,7 +22,7 @@ Item {
       width: parent.height - Style.space(6); height: width; radius: width / 2
       y: Style.space(3)
       x: root.checked ? parent.width - width - Style.space(3) : Style.space(3)
-      color: root.checked ? Color.background : root.foreground
+      color: root.checked ? C.Color.background : root.foreground
       Behavior on x { NumberAnimation { duration: 120 } }
     }
   }

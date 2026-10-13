@@ -1,6 +1,7 @@
 import QtQuick
 import QtQuick.Controls as C
 import qs.Commons
+import qs.Commons as C   // Qt 6.12's QtQuick has its own Color type, which hides ours
 
 // Labelled combo box over [{value, label}]; emits changed(value).
 Column {
@@ -8,7 +9,7 @@ Column {
   property string label: ""
   property string value: ""
   property var options: []
-  property color foreground: Color.foreground
+  property color foreground: C.Color.foreground
   property string fontFamily: Style.font.family
   property bool showLabel: true
   signal changed(string value)
