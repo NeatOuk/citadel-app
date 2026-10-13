@@ -304,7 +304,9 @@ Column {
     onClicked: root.s.setPref("proxyDns", root.s.prefs.proxyDns !== true)
   }
   Repeater {
-    model: root.s.prefs.proxyDns === true ? root.s.launchers : []
+    // one line per browser, though a browser may have several launchers
+    model: root.s.prefs.proxyDns === true ? root.s.launchers.filter(function(x, i, all) {
+      return all.findIndex(function(y) { return y.exe === x.exe && y.state === x.state }) === i }) : []
     delegate: Lbl {
       required property var modelData
       p: root.p

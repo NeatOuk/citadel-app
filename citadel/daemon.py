@@ -366,7 +366,7 @@ class Daemon:
         first = self.ticks == 0
         self.ticks += 1
         self._prune_expired_rules()
-        self.learned = M.learn_targets(self.learned, self.rules, self.conns, self.now, 3600)
+        self.learned = M.learn_targets(self.learned, self.rules, self._firewall_conns(), self.now, 3600)
         ctx = self._ctx()
         dec, up, down, denied = {}, 0, 0, 0
         new_alerts = list(self.alerts)
@@ -534,7 +534,7 @@ class Daemon:
                 if scope == "hostPort" and c.get("rport") != c0.get("rport"):
                     return False
                 return c.get("raddr") == c0.get("raddr") or bool(c0.get("host") and c.get("host") == c0.get("host"))
-            self._kill(M.kill_targets(self.conns, pred, self.uid))
+            self._kill(M.kill_targets(self._firewall_conns(), pred, self.uid))
         src = source or ("you · once" if duration == "once" else "you · until quit" if duration == "untilQuit" else "you · from now on")
         self._log([self._log_entry(alert["conn"], action, src)])
         self.alerts = [a for a in self.alerts if a["key"] != key]
@@ -687,7 +687,7 @@ class Daemon:
                                                    and x["port"] == r["port"])] + [r]
         if not fromAlert and r["action"] == "deny":
             ctx = self._ctx()
-            self._kill(M.kill_targets(self.conns, lambda c: M.rule_matches(r, c, ctx), self.uid))
+            self._kill(M.kill_targets(self._firewall_conns(), lambda c: M.rule_matches(r, c, ctx), self.uid))
         self._rules_changed()
         return r
 
@@ -1158,9 +1158,9 @@ class Daemon:
             spec = M.build_spec_darwin(self.rules, ctx, self.prefs, self.defaultRoute, self.proxies)
             self._apply_text(json.dumps(spec, separators=(",", ":")), None)
             return
-        res = M.build_spec(self.rules, ctx, self.conns, self.apps, self.ipCidrs, self.uid)
+        res = M.build_spec(self.rules, ctx, self._firewall_conns(), self.apps, self.ipCidrs, self.uid)
         res["spec"]["logNew"] = self.prefs.get("catchShort") is not False
-        routes = M.compile_routes(self.rules, self.defaultRoute, self.proxies, ctx, self.conns, self.apps, self.uid)
+        routes = M.compile_routes(self.rules, self.defaultRoute, self.proxies, ctx, self._firewall_conns(), self.apps, self.uid)
         if routes and self.proxyCapable:
             res["spec"]["proxy"] = routes
             self.proxyError = ""
@@ -1203,7 +1203,7 @@ class Daemon:
             self.enforceBusy = False
             if code == 0:
                 self.enforceActive, self.enforceError, self.enforceAppliedAt = True, "", _now()
-                cut = M.route_cut_targets(self._appliedRoutes, self._pendingRoutes, self.conns, self.uid)
+                cut = M.route_cut_targets(self._appliedRoutes, self._pendingRoutes, self._firewall_conns(), self.uid)
                 self._appliedRoutes = self._pendingRoutes
                 if cut:
                     self._kill(cut)
@@ -1372,7 +1372,12 @@ class Daemon:
         """A front-door connection as the destination the browser asked for."""
         address = M.is_address_like(host)
         return dict(c, raddr=host if address else "", host="" if address else host, rport=port,
-                    scope="internet", cc="", org="")
+                    scope="internet", cc="", org="", front=True)
+
+    def _firewall_conns(self):
+        """Connections the firewall rules and socket kills are built from. Front-door
+        ones are left out: they go to Citadel itself and have no address of their own."""
+        return [c for c in self.conns if not c.get("front")]
 
     def _named_front_conns(self, conns):
         """The monitor sees front-door connections going to 127.0.0.1; show them
