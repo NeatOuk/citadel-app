@@ -49,6 +49,30 @@ class ProcessWatcher(unittest.TestCase):
             a.close()
             b.close()
 
+    @unittest.skipUnless(subprocess.run(["which", "ss"], capture_output=True).returncode == 0, "needs ss")
+    def test_match_names_a_connection_by_the_host_the_app_asked_for(self):
+        import socket
+        from citadel.monitor import common as C
+        from citadel.monitor import linux
+        saved_backend = C.B
+        C.use(linux)
+        self.addCleanup(C.use, saved_backend)
+        srv = socket.create_server(("127.0.0.1", 0))
+        cli = socket.create_connection(srv.getsockname())
+        saved = C.lists_state["domains"]
+        C.lists_state["domains"] = {"testfeed": {"blocked.example"}}
+        try:
+            lport, rport = cli.getsockname()[1], srv.getsockname()[1]
+            c = C.match_conn(lport, "127.0.0.1", rport, "blocked.example")
+            self.assertEqual((c["pid"], c["lport"], c["rport"]), (os.getpid(), lport, rport))
+            self.assertEqual((c["host"], c["list"], c["new"]), ("blocked.example", "testfeed", True))
+            self.assertEqual(c["exe"], os.path.realpath(sys.executable))
+            self.assertIsNone(C.match_conn(lport, "127.0.0.1", rport + 1, "blocked.example"))
+        finally:
+            C.lists_state["domains"] = saved
+            cli.close()
+            srv.close()
+
     def test_last_pid_moves(self):
         from citadel.monitor import linux as L
         before = L.last_pid()

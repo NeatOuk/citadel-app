@@ -44,6 +44,7 @@ the same core, as a background service with its own window and tray icon.
   - Send chosen apps through HTTP, HTTPS or SOCKS5 proxies; logins are kept in
     your keyring.
   - It fails closed: if the proxy is down, the app is blocked, never sent direct.
+  - Optionally resolve hostnames through the proxy, with its own DNS.
 - **Threat feeds and imports.**
   - One-click feeds: FireHOL, Spamhaus DROP, StevenBlack, HaGeZi.
   - Import AdGuard rules, Pi-hole lists, hosts files or any list URL.

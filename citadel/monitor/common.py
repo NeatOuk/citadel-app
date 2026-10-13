@@ -13,6 +13,8 @@ It reads JSON commands on stdin, one per line:
   {"cmd":"config","interval":2,"retentionDays":30,"resolveHosts":[...],
    "lists":[{"id","url","kind":"ip"|"domain","enabled"}]}
   {"cmd":"refreshLists"}   {"cmd":"geoipDownload"}   {"cmd":"stats"}
+  {"cmd":"match","id","lport","raddr","rport","host"}  ->  {"type":"match","id","conn"}
+     a routed app's new connection, named by the host it asked the proxy for
 
 What differs per OS (sockets, processes, integrity, networks, byte
 counters) comes from a backend, `B`: citadel.monitor.linux or .darwin.
@@ -1010,6 +1012,41 @@ def app_name(exe, comm, cg):
     return unit or "unknown"
 
 
+def make_conn(r, exe, prev, now, host=None):
+    """A tick's connection from an ss row. host: the name the app asked for, if known."""
+    system = r["uid"] != MY_UID
+    key = "%s|%s:%d|%s:%d" % (r["proto"], r["laddr"], r["lport"], r["raddr"], r["rport"])
+    p = prev.get(key)
+    dt = max(0.5, now - p["ts"]) if p else 0
+    up_rate = max(0, (r["up"] - p["up"]) / dt) if p else 0
+    down_rate = max(0, (r["down"] - p["down"]) / dt) if p else 0
+    if host is None:
+        host = host_name(r["raddr"], p.get("host", "") if p else "")
+    c = {"key": key, "proto": r["proto"], "state": r["state"].lower(),
+         "raddr": r["raddr"], "rport": r["rport"], "lport": r["lport"],
+         "pid": r["pid"], "exe": exe, "app": app_name(exe, r["comm"], r["cgroup"]),
+         "cgroup": r["cgroup"].lstrip("/"), "system": system, "scope": classify(r["raddr"]),
+         "host": host or "", "cc": country(r["raddr"]), "org": owner(r["raddr"]),
+         "up": r["up"], "down": r["down"], "upRate": up_rate, "downRate": down_rate,
+         "new": p is None, "list": list_match(host, r["raddr"]) if not system else ""}
+    c.update(origin_fields(r["pid"], r["cgroup"]) if (r["pid"] and not system) else EMPTY_ORIGIN)
+    if r["pid"] == DAEMON_PID or re.search(r"/citadel-proxy(\s|$)", c["cmd"]):
+        # Citadel's own proxy tunnels: the app's side is shown separately
+        c.update(app="Citadel proxy", via="", viaId="", viaKind="")
+    return c
+
+
+def match_conn(lport, raddr, rport, host):
+    """The connection a routed app just made, built like a tick's but named by
+    the host it asked the proxy for (Resolve hostnames through proxy); None if
+    it is gone or not this user's."""
+    for r in B.sockets(lport):
+        if (r["proto"] == "tcp" and r["lport"] == lport and r["raddr"] == raddr and r["rport"] == rport
+                and r["uid"] == MY_UID):
+            return make_conn(r, B.proc_exe(r["pid"]) if r["pid"] else "", {}, time.time(), host)
+    return None
+
+
 def tick(hist, prev, table_cache):
     now = time.time()
     rows = B.sockets()
@@ -1021,25 +1058,7 @@ def tick(hist, prev, table_cache):
         if kind in ("loopback", "multicast"):
             continue
         exe = table.get(r["pid"], ("", ""))[0].replace(" (deleted)", "") if r["pid"] else ""
-        system = r["uid"] != MY_UID
-        key = "%s|%s:%d|%s:%d" % (r["proto"], r["laddr"], r["lport"], r["raddr"], r["rport"])
-        p = prev.get(key)
-        dt = max(0.5, now - p["ts"]) if p else 0
-        up_rate = max(0, (r["up"] - p["up"]) / dt) if p else 0
-        down_rate = max(0, (r["down"] - p["down"]) / dt) if p else 0
-        host = host_name(r["raddr"], p.get("host", "") if p else "")
-        c = {"key": key, "proto": r["proto"], "state": r["state"].lower(),
-             "raddr": r["raddr"], "rport": r["rport"], "lport": r["lport"],
-             "pid": r["pid"], "exe": exe, "app": app_name(exe, r["comm"], r["cgroup"]),
-             "cgroup": r["cgroup"].lstrip("/"), "system": system, "scope": kind,
-             "host": host or "", "cc": country(r["raddr"]), "org": owner(r["raddr"]),
-             "up": r["up"], "down": r["down"], "upRate": up_rate, "downRate": down_rate,
-             "new": p is None, "list": list_match(host, r["raddr"]) if not system else ""}
-        c.update(origin_fields(r["pid"], r["cgroup"]) if (r["pid"] and not system) else EMPTY_ORIGIN)
-        if r["pid"] == DAEMON_PID or re.search(r"/citadel-proxy(\s|$)", c["cmd"]):
-            # Citadel's own proxy tunnels: the app's side is shown separately
-            c.update(app="Citadel proxy", via="", viaId="", viaKind="")
-        conns.append(c)
+        conns.append(make_conn(r, exe, prev, now))
     nextprev = {c["key"]: {"ts": now, "up": c["up"], "down": c["down"], "host": c["host"],
                            "sock": (c["lport"], c["raddr"], c["rport"])} for c in conns}
     short = short_connections(conns, {p["sock"] for p in prev.values() if "sock" in p})
@@ -1088,6 +1107,12 @@ def handle(cmd, hist):
         hist.stats()
     elif c == "resolve":
         threading.Thread(target=resolve_hosts, args=(True,), daemon=True).start()
+    elif c == "match":
+        try:
+            conn = match_conn(int(cmd["lport"]), str(cmd["raddr"]), int(cmd["rport"]), str(cmd["host"]))
+        except (KeyError, TypeError, ValueError):
+            conn = None
+        emit({"type": "match", "id": cmd.get("id"), "conn": conn})
 
 
 def main():

@@ -42,7 +42,8 @@ DEFAULT_LISTS = [
      "url": "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/light-onlydomains.txt", "enabled": False},
 ]
 DEFAULT_PREFS = {"interval": 2, "alertTimeout": 90, "alertDefault": "allow", "retentionDays": 30, "notify": True,
-                 "modeMinutes": 0, "catchShort": True, "explainCommand": "", "explainModel": "", "explainAgent": ""}
+                 "modeMinutes": 0, "catchShort": True, "explainCommand": "", "explainModel": "", "explainAgent": "",
+                 "proxyDns": False}
 
 # Session pieces that must never be killed from Citadel, on any desktop.
 PROTECTED_NAMES = [
@@ -135,6 +136,7 @@ class Daemon:
         self._jobs = asyncio.Queue()
         self._explainQueue = asyncio.Queue()
         self._monitor = self._proxy = None   # _proxy: the in-process proxy's loop tasks while it runs
+        self._matches, self._matchId = {}, 0  # monitor "match" requests in flight: id -> future
         self._dirty = set()
         self._listeners = []            # callables(event dict)
         self._saveHandle = None
@@ -326,6 +328,10 @@ class Daemon:
             self.ipCidrs = m.get("ipCidrs") or []
             self.changed("listStatus", "ipCidrCount")
             self._reevaluate()
+        elif t == "match":
+            fut = self._matches.pop(m.get("id"), None)
+            if fut and not fut.done():
+                fut.set_result(m.get("conn"))
         elif t == "geoip":
             self.geoip = m
             self.changed("geoip")
@@ -883,6 +889,8 @@ class Daemon:
             self._send_config()
         if key == "catchShort" and self.enforce:
             self._sync_enforcement(True)
+        if key == "proxyDns":
+            self._configure_proxy()
         if key in ("explainAgent", "explainCommand"):
             self.changed("defaultAgent")
 
@@ -1287,11 +1295,13 @@ class Daemon:
         for t in self._proxy or []:
             t.cancel()
         self._proxy = None
+        PX.check_name = None
         PX.close_all()
 
     def _configure_proxy(self):
         if not self._proxy:
             return
+        PX.check_name = self._check_proxy_name if self.prefs.get("proxyDns") else None
         cfg = {"checkEvery": 30, "proxies": copy.deepcopy(self.proxies)}
 
         async def apply():
@@ -1304,6 +1314,45 @@ class Daemon:
             except Exception as e:
                 log.warning("proxy config failed: %s", e)
         asyncio.get_running_loop().create_task(apply())
+
+    async def _check_proxy_name(self, lport, ip, port, name):
+        """Resolve hostnames through proxy: may the app on local port lport, which
+        dialled ip:port, reach `name` through the proxy? Decided like any
+        connection, by that name. A new one goes to the gate and goes ahead, as
+        Linux never holds connections; one the monitor can't find is refused."""
+        conn = await self._match_conn(lport, ip, port, name)
+        if not conn:
+            self._log([{"ts": self.now, "app": "?", "exe": "", "via": "", "dest": name, "ip": ip, "port": port, "cc": "",
+                        "verdict": "deny", "source": "app not found" if self.monitorUp else "monitor not running"}])
+            return False
+        d = self._decide(conn, self._ctx())
+        if d["verdict"] == "deny":
+            source = "policy" if d["source"] == "rule" else self._silent_source(conn, d)
+            self._log([self._log_entry(conn, "deny", source)])
+            return False
+        if d["verdict"] == "prompt":
+            alerts = list(self.alerts)
+            self._queue_alert(alerts, conn, d)
+            if len(alerts) != len(self.alerts):
+                self.alerts = alerts
+                self.changed("alerts")
+        return True
+
+    async def _match_conn(self, lport, ip, port, name):
+        """The monitor's view of a routed app's new connection, or None."""
+        if not self.monitorUp:
+            return None
+        self._matchId += 1
+        mid = self._matchId
+        fut = asyncio.get_running_loop().create_future()
+        self._matches[mid] = fut
+        self._send({"cmd": "match", "id": mid, "lport": lport, "raddr": ip, "rport": port, "host": name})
+        try:
+            return await asyncio.wait_for(fut, 2)
+        except asyncio.TimeoutError:
+            return None
+        finally:
+            self._matches.pop(mid, None)
 
     def _safe_proxy_line(self, m):
         try:

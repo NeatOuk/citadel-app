@@ -195,6 +195,12 @@ Like Proxifier: chosen apps go through a proxy, everything else goes direct.
 - **Host names:**
   - Many proxies refuse a bare IP, so Citadel asks the proxy for the host name the app requested.
   - It does so only when that name resolves to the address the firewall let through, so an app can't name another host to get around a block.
+- **Resolve hostnames through proxy** (Settings, Linux): like Proxifier's option of the same name.
+  - The proxy gets the name the app asked for and looks it up with its own DNS, so you don't need to know the proxy's DNS server.
+  - The name isn't resolved on your machine for this. Instead it is checked against your policies and feeds for that app, so naming another host can't get around a block. A new name goes to the gate as usual.
+  - The app still looks the name up locally before it connects, so your DNS server sees it, and names only the proxy's network knows still fail.
+  - Traffic without a name (not HTTP or TLS) goes to the address.
+  - Address rules and IP feeds are checked against the address the app dialled, not the one the proxy reaches.
 - **Moving connections:** when a route changes, the app's open connections are closed so they reconnect the new way.
 - **Health:** a status dot per proxy, and a log of recent failures.
 

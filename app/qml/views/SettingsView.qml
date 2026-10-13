@@ -291,6 +291,18 @@ Column {
     foreground: root.p.foreground
     onChanged: function(v) { root.s.setDefaultRoute(v) }
   }
+  Toggle {
+    width: parent.width
+    visible: root.s.proxies.length > 0
+    label: "Resolve hostnames through proxy"
+    description: root.s.prefs.proxyDns === true
+      ? "On: the proxy gets the name the app asked for and looks it up with its own DNS. The name is checked against your policies first."
+      : "Off: the proxy gets the name only if it resolves here to the same address, else the address."
+    checked: root.s.prefs.proxyDns === true
+    foreground: root.p.foreground
+    fontFamily: root.p.fontFamily
+    onClicked: root.s.setPref("proxyDns", root.s.prefs.proxyDns !== true)
+  }
   Repeater {
     model: root.s.proxyLog.slice(0, 5)
     delegate: Lbl {

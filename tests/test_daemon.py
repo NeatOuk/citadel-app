@@ -338,6 +338,54 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.c.state["decisions"]["k8"]["source"], "citadel")
         self.assertEqual(self.c.state["alerts"], [])
 
+    async def test_proxy_dns_sets_the_name_check(self):
+        from citadel import proxy as PX
+        self.feed(tick([]))
+        await self.c.call("saveProxy", {"name": "Dead", "type": "http", "host": "127.0.0.1", "port": 1}, "", "")
+        self.assertTrue(await self.c.wait_for(lambda s: self.d._proxy, timeout=5))
+        self.assertIsNone(PX.check_name)
+        await self.c.call("setPref", "proxyDns", True)
+        self.assertTrue(await self.c.wait_for(lambda s: PX.check_name is not None, timeout=5))
+        await self.c.call("setPref", "proxyDns", False)
+        self.assertTrue(await self.c.wait_for(lambda s: PX.check_name is None, timeout=5))
+
+    async def test_proxy_dns_decides_by_the_name_the_app_asked_for(self):
+        self.d.prefs["notify"] = False
+        self.feed(tick([]))
+        self.assertTrue(await self.c.wait_for(lambda s: s.get("ticks", 0) >= 1))
+        replies = {
+            "blocked.example": conn("p1", "/usr/bin/curl", "93.184.215.14", host="blocked.example"),
+            "feed.example": conn("p2", "/usr/bin/curl", "93.184.215.14", host="feed.example", list="hagezi"),
+            "new.example": conn("p3", "/usr/bin/curl", "93.184.215.14", host="new.example"),
+            "ok.example": conn("p4", "/usr/bin/curl", "93.184.215.14", host="ok.example"),
+        }
+        sent = []
+
+        def monitor(obj):                      # the monitor answers "match" with the connection it found
+            sent.append(obj)
+            if obj.get("cmd") == "match":
+                asyncio.get_running_loop().call_soon(
+                    self.d._on_monitor_line, {"type": "match", "id": obj["id"], "conn": replies.get(obj["host"])})
+        self.d._send = monitor
+        await self.c.call("addRule", {"app": "/usr/bin/curl", "host": "blocked.example", "action": "deny"})
+        await self.c.call("addRule", {"app": "/usr/bin/curl", "host": "ok.example", "action": "allow"})
+        check = self.d._check_proxy_name
+        self.assertFalse(await check(50001, "93.184.215.14", 443, "blocked.example"))
+        self.assertEqual(sent[-1], {"cmd": "match", "id": sent[-1]["id"], "lport": 50001, "raddr": "93.184.215.14",
+                                    "rport": 443, "host": "blocked.example"})
+        self.assertEqual(self.d.decisionLog[0]["dest"], "blocked.example")
+        self.assertFalse(await check(50002, "93.184.215.14", 443, "feed.example"))
+        self.assertEqual(self.d.decisionLog[0]["source"], "feed hagezi")
+        self.assertTrue(await check(50004, "93.184.215.14", 443, "ok.example"))
+        self.assertEqual(self.d.alerts, [])
+        self.assertTrue(await check(50003, "93.184.215.14", 443, "new.example"))   # Guarded: goes ahead, and asks
+        self.assertEqual([a["conn"]["host"] for a in self.d.alerts], ["new.example"])
+        self.assertFalse(await check(50005, "93.184.215.14", 443, "gone.example"))  # the monitor can't find it
+        self.assertEqual((self.d.decisionLog[0]["dest"], self.d.decisionLog[0]["source"]), ("gone.example", "app not found"))
+        self.d.monitorUp = False
+        self.assertFalse(await asyncio.wait_for(check(50006, "93.184.215.14", 443, "ok.example"), 0.5))
+        self.assertEqual(self.d.decisionLog[0]["source"], "monitor not running")
+
     @unittest.skipUnless(sys.platform.startswith("linux"), "the Omarchy plugin exists on Linux only")
     async def test_pauses_while_the_omarchy_plugin_runs(self):
         self.feed(tick([conn("k1", "/usr/bin/curl", "1.1.1.1", new=False)]))
