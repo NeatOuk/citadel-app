@@ -414,6 +414,8 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         # the monitor reports the browser's socket to 127.0.0.1:47100; it is shown by where it went
         shown = self.d._named_front_conns([browser])
         self.assertEqual((shown[0]["host"], shown[0]["rport"], shown[0]["raddr"]), ("intranet.example.com", 8443, ""))
+        self.d.conns = shown                   # no address of its own: never in firewall rules ("bad address ''")
+        self.assertEqual(self.d._firewall_conns(), [])
 
     @unittest.skipUnless(sys.platform.startswith("linux"), "the Omarchy plugin exists on Linux only")
     async def test_pauses_while_the_omarchy_plugin_runs(self):

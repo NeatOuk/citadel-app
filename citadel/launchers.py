@@ -148,7 +148,7 @@ def started_through(pid, port):
     or is one of the browser's helper processes (renderers etc. carry --type=)."""
     try:
         with open("/proc/%d/cmdline" % pid, "rb") as f:
-            args = f.read().decode(errors="replace").split("\0")
+            args = f.read().decode(errors="replace").replace("\0", " ").split()   # Chromium rewrites it space-separated
     except OSError:
         return None
     if any(a.startswith("--type=") for a in args):
