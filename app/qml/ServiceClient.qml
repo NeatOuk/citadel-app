@@ -24,7 +24,7 @@ QtObject {
   property var defaultLists: []
   property var decisionLog: []
   property var prefs: ({ interval: 2, alertTimeout: 90, alertDefault: "allow", retentionDays: 30, notify: true,
-                         catchShort: true, explainCommand: "", explainModel: "", explainAgent: "" })
+                         catchShort: true, explainCommand: "", explainModel: "", explainAgent: "", proxyDns: false })
   property var conns: []
   property var apps: ({})
   property var network: ({ names: [], ssid: "" })
