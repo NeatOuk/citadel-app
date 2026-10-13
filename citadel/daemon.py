@@ -23,6 +23,7 @@ import time
 
 from . import model as M
 from . import platform as P
+from . import launchers as L
 from . import proxy as PX
 
 log = logging.getLogger("citadel")
@@ -65,7 +66,7 @@ PUBLIC = ["rules", "profiles", "profileOverride", "mode", "silentUntil", "enforc
           "enforceActive", "enforceBusy", "enforceError", "enforceAppliedAt", "enforceDrops", "proxies", "defaultRoute",
           "proxyStatus", "proxyLog", "proxyCarried", "proxyCheck", "proxyError", "explanations", "explainTestResult",
           "defaultAgent", "installedAgents", "uid", "session", "resolved", "daemonVersion", "privilegedGroup",
-          "pluginActive"]
+          "pluginActive", "launchers"]
 
 
 def _now():
@@ -119,6 +120,7 @@ class Daemon:
         self.helperInstalled, self.enforceActive, self.enforceBusy = False, False, False
         self.enforceError, self.enforceAppliedAt, self.enforceDrops = "", 0, 0
         self.proxyStatus, self.proxyLog, self.proxyCarried, self.proxyCheck, self.proxyError = {}, [], [], {}, ""
+        self.launchers = []             # browsers started through the front door (citadel/launchers.py)
         self._proxyFailed = {}
         self.explanations, self.explainTestResult = {}, {}
         self.defaultAgent, self.installedAgents = "", []
@@ -137,6 +139,8 @@ class Daemon:
         self._explainQueue = asyncio.Queue()
         self._monitor = self._proxy = None   # _proxy: the in-process proxy's loop tasks while it runs
         self._matches, self._matchId = {}, 0  # monitor "match" requests in flight: id -> future
+        self._front = {}                # front-door connections: local port -> {host, port, route, ts}
+        self._launcherKey, self._launcherStatus = None, []
         self._dirty = set()
         self._listeners = []            # callables(event dict)
         self._saveHandle = None
@@ -310,7 +314,7 @@ class Daemon:
                 hosts[M.norm_host(x["host"])] = True
         self._send({"cmd": "config", "interval": float(self.prefs.get("interval") or 2),
                     "retentionDays": float(self.prefs.get("retentionDays") or 30),
-                    "resolveHosts": list(hosts), "lists": self.lists})
+                    "resolveHosts": list(hosts), "lists": self.lists, "frontPort": PX.front["port"]})
 
     def _on_monitor_line(self, m):
         t = m.get("type")
@@ -352,7 +356,7 @@ class Daemon:
             self.uid = m["uid"]
         if m.get("selfPid"):
             self.protectedPids = {str(m["selfPid"]): True, str(os.getpid()): True}
-        self.conns = m.get("conns") or []
+        self.conns = self._named_front_conns(m.get("conns") or [])
         self.apps = m.get("apps") or {}
         self.network = m.get("network") or {"names": [], "ssid": ""}
         if m.get("kernelLog"):
@@ -362,7 +366,7 @@ class Daemon:
         first = self.ticks == 0
         self.ticks += 1
         self._prune_expired_rules()
-        self.learned = M.learn_targets(self.learned, self.rules, self.conns, self.now, 3600)
+        self.learned = M.learn_targets(self.learned, self.rules, self._firewall_conns(), self.now, 3600)
         ctx = self._ctx()
         dec, up, down, denied = {}, 0, 0, 0
         new_alerts = list(self.alerts)
@@ -426,6 +430,7 @@ class Daemon:
                      "decisions", "groups", "rate", "totals", "recentShort", "alerts", "activeProfile")
         if self.enforce:
             self._sync_enforcement(first)
+        self._sync_launchers()
 
     def _decide(self, c, ctx):
         """M.decide, plus two gate cases: an allowed program that changed since
@@ -529,7 +534,7 @@ class Daemon:
                 if scope == "hostPort" and c.get("rport") != c0.get("rport"):
                     return False
                 return c.get("raddr") == c0.get("raddr") or bool(c0.get("host") and c.get("host") == c0.get("host"))
-            self._kill(M.kill_targets(self.conns, pred, self.uid))
+            self._kill(M.kill_targets(self._firewall_conns(), pred, self.uid))
         src = source or ("you · once" if duration == "once" else "you · until quit" if duration == "untilQuit" else "you · from now on")
         self._log([self._log_entry(alert["conn"], action, src)])
         self.alerts = [a for a in self.alerts if a["key"] != key]
@@ -682,7 +687,7 @@ class Daemon:
                                                    and x["port"] == r["port"])] + [r]
         if not fromAlert and r["action"] == "deny":
             ctx = self._ctx()
-            self._kill(M.kill_targets(self.conns, lambda c: M.rule_matches(r, c, ctx), self.uid))
+            self._kill(M.kill_targets(self._firewall_conns(), lambda c: M.rule_matches(r, c, ctx), self.uid))
         self._rules_changed()
         return r
 
@@ -1153,9 +1158,9 @@ class Daemon:
             spec = M.build_spec_darwin(self.rules, ctx, self.prefs, self.defaultRoute, self.proxies)
             self._apply_text(json.dumps(spec, separators=(",", ":")), None)
             return
-        res = M.build_spec(self.rules, ctx, self.conns, self.apps, self.ipCidrs, self.uid)
+        res = M.build_spec(self.rules, ctx, self._firewall_conns(), self.apps, self.ipCidrs, self.uid)
         res["spec"]["logNew"] = self.prefs.get("catchShort") is not False
-        routes = M.compile_routes(self.rules, self.defaultRoute, self.proxies, ctx, self.conns, self.apps, self.uid)
+        routes = M.compile_routes(self.rules, self.defaultRoute, self.proxies, ctx, self._firewall_conns(), self.apps, self.uid)
         if routes and self.proxyCapable:
             res["spec"]["proxy"] = routes
             self.proxyError = ""
@@ -1198,7 +1203,7 @@ class Daemon:
             self.enforceBusy = False
             if code == 0:
                 self.enforceActive, self.enforceError, self.enforceAppliedAt = True, "", _now()
-                cut = M.route_cut_targets(self._appliedRoutes, self._pendingRoutes, self.conns, self.uid)
+                cut = M.route_cut_targets(self._appliedRoutes, self._pendingRoutes, self._firewall_conns(), self.uid)
                 self._appliedRoutes = self._pendingRoutes
                 if cut:
                     self._kill(cut)
@@ -1295,13 +1300,16 @@ class Daemon:
         for t in self._proxy or []:
             t.cancel()
         self._proxy = None
-        PX.check_name = None
+        PX.check_name = PX.check_front = None
         PX.close_all()
+        self._sync_launchers()
 
     def _configure_proxy(self):
         if not self._proxy:
             return
-        PX.check_name = self._check_proxy_name if self.prefs.get("proxyDns") else None
+        dns = bool(self.prefs.get("proxyDns"))
+        PX.check_name = self._check_proxy_name if dns else None
+        PX.check_front = self._check_front if dns else None
         cfg = {"checkEvery": 30, "proxies": copy.deepcopy(self.proxies)}
 
         async def apply():
@@ -1310,6 +1318,9 @@ class Daemon:
                 if not self._proxy:                  # stopped meanwhile: don't keep the ports
                     PX.close_all()
                     return
+                await PX.set_front(PX.FRONT_PORT if dns else 0)
+                self._send_config()                  # the monitor shows front-door connections
+                self._sync_launchers()
                 await PX.report_status()             # new proxies get a status at once
             except Exception as e:
                 log.warning("proxy config failed: %s", e)
@@ -1320,7 +1331,12 @@ class Daemon:
         dialled ip:port, reach `name` through the proxy? Decided like any
         connection, by that name. A new one goes to the gate and goes ahead, as
         Linux never holds connections; one the monitor can't find is refused."""
-        conn = await self._match_conn(lport, ip, port, name)
+        return self._gate_by_name(await self._match_conn(lport, ip, port, name), name, ip, port)
+
+    def _gate_by_name(self, conn, name, ip, port):
+        """Decide a connection named by the host the app asked for: a deny is
+        logged, a new one is queued at the gate and goes ahead, an app the
+        monitor can't find is refused."""
         if not conn:
             self._log([{"ts": self.now, "app": "?", "exe": "", "via": "", "dest": name, "ip": ip, "port": port, "cc": "",
                         "verdict": "deny", "source": "app not found" if self.monitorUp else "monitor not running"}])
@@ -1337,6 +1353,79 @@ class Daemon:
                 self.alerts = alerts
                 self.changed("alerts")
         return True
+
+    async def _check_front(self, lport, host, port):
+        """A browser started through the front door asks for host:port. -> "direct",
+        the id of the proxy its policies route it through, or None to refuse."""
+        conn = await self._match_conn(lport, "127.0.0.1", PX.front["port"], host)
+        conn = conn and self._front_conn(conn, host, port)
+        if not self._gate_by_name(conn, host, "", port):
+            return None
+        px = M.route_for(conn, self.rules, self._ctx(), self.defaultRoute, self.proxies)
+        route = "direct" if px is None else None if px.get("missing") else px["id"]
+        if route:
+            self._front = {**self._front, lport: {"host": host, "port": port, "route": route, "ts": _now()}}
+        return route
+
+    @staticmethod
+    def _front_conn(c, host, port):
+        """A front-door connection as the destination the browser asked for."""
+        address = M.is_address_like(host)
+        return dict(c, raddr=host if address else "", host="" if address else host, rport=port,
+                    scope="internet", cc="", org="", front=True)
+
+    def _firewall_conns(self):
+        """Connections the firewall rules and socket kills are built from. Front-door
+        ones are left out: they go to Citadel itself and have no address of their own."""
+        return [c for c in self.conns if not c.get("front")]
+
+    def _named_front_conns(self, conns):
+        """The monitor sees front-door connections going to 127.0.0.1; show them
+        by where the browser asked to go. Forgets ones that are gone."""
+        port = PX.front["port"]
+        if not port and not self._front:
+            return conns
+        out, seen = [], set()
+        for c in conns:
+            f = self._front.get(c.get("lport")) if c.get("rport") == port and c.get("scope") == "loopback" else None
+            if f:
+                seen.add(c["lport"])
+                c = self._front_conn(c, f["host"], f["port"])
+            out.append(c)
+        now = _now()
+        self._front = {k: v for k, v in self._front.items() if k in seen or now - v["ts"] < 10}
+        return out
+
+    def _sync_launchers(self):
+        """Browsers routed through a proxy start through the front door while
+        Resolve hostnames through proxy is on; their launchers go back when not."""
+        if not self.loaded or sys.platform != "linux":
+            return
+        port = PX.front["port"] if (self._proxy and self.prefs.get("proxyDns")) else 0
+        exes = set()
+        if port:
+            ids = {p["id"] for p in self.proxies}
+            routed = [r for r in self.rules if r["action"] == "allow" and r.get("route") in ids]
+            exes = {r["app"] for r in routed if r["app"] not in ("", "*")}
+            if self.defaultRoute in ids or any(r["app"] == "*" for r in routed):
+                exes |= set(self.apps)
+            exes = {e for e in exes if L.is_browser(e)}
+        key = (port, tuple(sorted(exes)))
+        if key != self._launcherKey:
+            try:
+                status = L.sync(exes, port)
+            except OSError as e:
+                log.warning("launchers: %s", e)
+                return
+            self._launcherKey, self._launcherStatus = key, status
+        out = []
+        for st in self._launcherStatus:
+            pids = (self.apps.get(st["exe"]) or {}).get("pids") or []
+            running = [L.started_through(p, port) for p in pids]
+            out.append(dict(st, restart=st["state"] == "managed" and False in running))
+        if out != self.launchers:
+            self.launchers = out
+            self.changed("launchers")
 
     async def _match_conn(self, lport, ip, port, name):
         """The monitor's view of a routed app's new connection, or None."""

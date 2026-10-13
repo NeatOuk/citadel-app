@@ -304,6 +304,23 @@ Column {
     onClicked: root.s.setPref("proxyDns", root.s.prefs.proxyDns !== true)
   }
   Repeater {
+    // one line per browser, though a browser may have several launchers
+    model: root.s.prefs.proxyDns === true ? root.s.launchers.filter(function(x, i, all) {
+      return all.findIndex(function(y) { return y.exe === x.exe && y.state === x.state }) === i }) : []
+    delegate: Lbl {
+      required property var modelData
+      p: root.p
+      width: root.width
+      color: modelData.state === "managed" && !modelData.restart ? root.p.dim : root.p.urgent
+      font.pixelSize: Style.font.caption
+      wrapMode: Text.WordWrap
+      text: modelData.state === "own" ? modelData.name + ": your own launcher " + modelData.file + " is left alone, so it doesn't start through Citadel."
+        : modelData.state === "none" ? modelData.name + ": no menu launcher found, start it with --proxy-server=socks5://127.0.0.1:47100."
+        : modelData.restart ? modelData.name + ": quit it completely and start it again from the menu to start through Citadel."
+        : modelData.name + ": starts through Citadel from the menu, so names only the proxy knows work too."
+    }
+  }
+  Repeater {
     model: root.s.proxyLog.slice(0, 5)
     delegate: Lbl {
       required property var modelData
