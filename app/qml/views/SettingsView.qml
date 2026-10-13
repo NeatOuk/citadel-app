@@ -600,18 +600,13 @@ Column {
       onChanged: function(v) { root.s.setPref("interval", Number(v)) }
     }
   }
-  RowLayout {
+  Lbl {
+    p: root.p
+    dim: true
     width: parent.width
-    spacing: Style.space(8)
-    Lbl { p: root.p; dim: true; text: "Keep history"; font.pixelSize: Style.font.caption }
-    ButtonGroup {
-      options: [{ value: "7", label: "7 days" }, { value: "30", label: "30 days" }, { value: "90", label: "90 days" }]
-      value: String(root.s.prefs.retentionDays)
-      foreground: root.p.foreground
-      fontFamily: root.p.fontFamily
-      fontSize: Style.font.caption
-      onChanged: function(v) { root.s.setPref("retentionDays", Number(v)) }
-    }
+    wrapMode: Text.WordWrap
+    font.pixelSize: Style.font.caption
+    text: "History: kept for good. On the 1st of each month the past month is archived as history-YYYYMM.db in ~/.local/share/citadel, and you get a notification."
   }
   RowLayout {
     width: parent.width

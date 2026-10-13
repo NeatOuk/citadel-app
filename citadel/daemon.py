@@ -42,7 +42,7 @@ DEFAULT_LISTS = [
     {"id": "hagezi-light", "name": "HaGeZi Light (trackers)", "kind": "domain",
      "url": "https://raw.githubusercontent.com/hagezi/dns-blocklists/main/wildcard/light-onlydomains.txt", "enabled": False},
 ]
-DEFAULT_PREFS = {"interval": 2, "alertTimeout": 90, "alertDefault": "allow", "retentionDays": 30, "notify": True,
+DEFAULT_PREFS = {"interval": 2, "alertTimeout": 90, "alertDefault": "allow", "notify": True,
                  "modeMinutes": 0, "catchShort": True, "explainCommand": "", "explainModel": "", "explainAgent": "",
                  "proxyDns": False}
 
@@ -313,7 +313,6 @@ class Daemon:
             if not M.is_address_like(x["host"]):
                 hosts[M.norm_host(x["host"])] = True
         self._send({"cmd": "config", "interval": float(self.prefs.get("interval") or 2),
-                    "retentionDays": float(self.prefs.get("retentionDays") or 30),
                     "resolveHosts": list(hosts), "lists": self.lists, "frontPort": PX.front["port"]})
 
     def _on_monitor_line(self, m):
@@ -332,6 +331,8 @@ class Daemon:
             self.ipCidrs = m.get("ipCidrs") or []
             self.changed("listStatus", "ipCidrCount")
             self._reevaluate()
+        elif t == "archived":
+            asyncio.get_running_loop().create_task(self._notify_archived(m))
         elif t == "match":
             fut = self._matches.pop(m.get("id"), None)
             if fut and not fut.done():
@@ -576,6 +577,19 @@ class Daemon:
         self._notePending.add(nkey)
         loop = asyncio.get_running_loop()
         loop.call_later(0.4, lambda: loop.create_task(self._notify(nkey)))
+
+    async def _notify_archived(self, m):
+        """The monthly history archive (citadel/monitor/common.py History.rotate)."""
+        month = str(m.get("month") or "")
+        try:
+            name = time.strftime("%B %Y", time.strptime(month, "%Y%m"))
+        except ValueError:
+            name = month
+        proc = await P.notify("Citadel: %s history archived" % name,
+                              "%s connections saved in %s. history.db now records the new month."
+                              % ("{:,}".format(int(m.get("flows") or 0)), os.path.basename(str(m.get("file") or ""))), [])
+        if proc:
+            await proc.wait()
 
     async def _notify(self, nkey):
         """A desktop notification for the waiting requests of one app; its
@@ -890,7 +904,7 @@ class Daemon:
         self.prefs = dict(self.prefs, **{key: value})
         self.changed("prefs")
         self.save()
-        if key in ("interval", "retentionDays"):
+        if key == "interval":
             self._send_config()
         if key == "catchShort" and self.enforce:
             self._sync_enforcement(True)
