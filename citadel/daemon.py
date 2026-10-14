@@ -1466,7 +1466,11 @@ class Daemon:
             if self.defaultRoute in ids or any(r["app"] == "*" for r in routed):
                 exes |= set(self.apps)
             exes = {e for e in exes if L.is_browser(e)}
-        key = (port, tuple(sorted(exes)))
+        try:                                         # browsers add web-app launchers; anything may delete ours
+            folder = os.stat(L.user_dir()).st_mtime_ns
+        except OSError:
+            folder = 0
+        key = (port, tuple(sorted(exes)), folder)
         if key != self._launcherKey:
             try:
                 status = L.sync(exes, port)
