@@ -431,6 +431,35 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sent[0], ("Citadel: October 2026 history archived",
                                    "82,125 connections saved in history-202610.db. history.db now records the new month."))
 
+    async def test_routed_connections_that_skipped_the_proxy_are_cut_once(self):
+        from citadel import daemon as D
+
+        class Writer:
+            def get_extra_info(self, name):
+                return ("192.0.2.9", 5001) if name == "peername" else None
+        cuts = []
+        self.d._kill = cuts.append
+        self.d._proxy, self.d.uid = [object()], os.getuid()
+        D.PX.live[Writer()] = None
+        app = SLICE + "app-x.scope"
+        self.d._appliedRoutes = {"rules": [{"verdict": "direct", "cgroup": app, "targets": [{"ip": "198.51.100.9", "port": None}]},
+                                           {"verdict": "redirect", "port": 47001, "cgroup": app}],
+                                 "defaultPort": None, "exclude": ["192.0.2.10"]}
+        self.d.conns = [conn("leak", "/usr/bin/curl", "203.0.113.1", new=False, lport=4000),
+                        conn("carried", "/usr/bin/curl", "203.0.113.2", new=False, lport=5001),
+                        conn("fresh", "/usr/bin/curl", "203.0.113.3", lport=4001),
+                        conn("direct", "/usr/bin/curl", "198.51.100.9", new=False, lport=4002),
+                        conn("proxy", "/usr/bin/curl", "192.0.2.10", 8989, new=False, lport=4003),
+                        conn("other", "/usr/bin/curl", "203.0.113.5", new=False, lport=4004, cgroup=SLICE + "app-y.scope")]
+        try:
+            self.d._cut_route_strays()
+            self.assertEqual(cuts, [[{"cgroup": app, "ip": "203.0.113.1"}]])
+            self.d._cut_route_strays()                 # the same connection is not cut again
+            self.assertEqual(cuts[-1], [])
+        finally:
+            self.d._proxy = None
+            D.PX.live.clear()
+
     @unittest.skipUnless(sys.platform.startswith("linux"), "the Omarchy plugin exists on Linux only")
     async def test_pauses_while_the_omarchy_plugin_runs(self):
         self.feed(tick([conn("k1", "/usr/bin/curl", "1.1.1.1", new=False)]))

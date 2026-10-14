@@ -134,6 +134,7 @@ class Daemon:
         self.loaded = False
         # internals
         self._lastSpec, self._appliedRoutes, self._pendingRoutes = "", None, None
+        self._cutStrays = set()          # connections already cut for skipping their proxy
         self._forceSync, self._lastSyncAt, self._syncHandle = False, 0, None
         self._jobs = asyncio.Queue()
         self._explainQueue = asyncio.Queue()
@@ -431,6 +432,7 @@ class Daemon:
                      "decisions", "groups", "rate", "totals", "recentShort", "alerts", "activeProfile")
         if self.enforce:
             self._sync_enforcement(first)
+            self._cut_route_strays()
         self._sync_launchers()
 
     def _decide(self, c, ctx):
@@ -1232,6 +1234,46 @@ class Daemon:
                     self.save()
             self.changed("enforceBusy", "enforceActive", "enforceError", "enforceAppliedAt")
         self._run(["apply", self.p.spec], done)
+
+    def _cut_route_strays(self):
+        """Close routed connections that went out directly anyway, so the app reconnects
+        through the proxy. A new app instance gets a new cgroup, and whatever it opens
+        before the rule naming that cgroup is applied escapes the redirect; the cut at
+        apply time only sees connections from the tick before it.
+        shortcut: rules with a cgroup only, not the Everything else route; upgrade if
+        the default route shows the same leak."""
+        routes = self._appliedRoutes
+        if not routes or not self._proxy:
+            return
+        carried = set()
+        for w in list(PX.live):
+            peer = w.get_extra_info("peername")
+            if peer:
+                carried.add(peer[1])
+        exclude = routes.get("exclude") or []
+
+        def first_rule(c):
+            for e in routes.get("rules") or []:
+                if e.get("cgroup") and e["cgroup"] != c.get("cgroup"):
+                    continue
+                if not e.get("targets") or any(
+                        M.net_contains(t["ip"], c.get("raddr")) and (t.get("port") is None or M._num(t["port"]) == M._num(c.get("rport")))
+                        for t in e["targets"]):
+                    return e
+            return None
+
+        def stray(c):
+            # "new" ones may still be on their way into the proxy
+            if c.get("proto") != "tcp" or c.get("scope") == "loopback" or c.get("new") or c.get("key") in self._cutStrays:
+                return False
+            if c.get("lport") in carried or any(M.net_contains(x, c.get("raddr")) for x in exclude):
+                return False
+            e = first_rule(c)
+            return bool(e and e.get("verdict") == "redirect")
+
+        conns = [c for c in self._firewall_conns() if stray(c)]
+        self._cutStrays = {c["key"] for c in self.conns if c.get("key") in self._cutStrays} | {c["key"] for c in conns}
+        self._kill(M.kill_targets(conns, lambda c: True, self.uid))
 
     def _kill(self, targets):
         if not self.enforce or not self.helperUsable or not targets or self.pluginActive:
