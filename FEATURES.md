@@ -204,9 +204,10 @@ Like Proxifier: chosen apps go through a proxy, everything else goes direct.
   - Traffic without a name (not HTTP or TLS) goes to the address.
   - Address rules and IP feeds are checked against the address the app dialled, not the one the proxy reaches.
   - **Browsers start through Citadel:** while the option is on, a routed Chromium-family browser (Edge, Chrome, Chromium, Brave, Vivaldi, Opera) gets a copy of its menu launcher in `~/.local/share/applications` that starts it with Citadel's local SOCKS5 port (127.0.0.1:47100). The browser then hands Citadel every host name itself, so names only the proxy's DNS knows (an office intranet) work too. Citadel checks the name against your policies, picks the route (the proxy, or direct) and shows the connection under its name in Traffic.
+    - Web apps installed from the browser (an Edge PWA such as Outlook) start the browser too, so Citadel adds the same option to their launchers in place and takes it out again when no longer needed. A launcher that goes missing is put back.
     - Settings lists these browsers and says when one must be restarted. Citadel removes its launchers when the browser is no longer routed, the option is off, or Citadel stops. A launcher you made yourself is never changed.
     - Only when started from the menu or a launcher. Not for Flatpak browsers yet. While Citadel isn't running, a browser started this way can't connect.
-- **Moving connections:** when a route changes, the app's open connections are closed so they reconnect the new way.
+- **Moving connections:** when a route changes, the app's open connections are closed so they reconnect the new way. The same happens to any connection of a routed app that went out directly anyway (one opened in the first seconds after the app started, before the rule for it was in place).
 - **Health:** a status dot per proxy, and a log of recent failures.
 
 ## 12. Explain

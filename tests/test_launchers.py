@@ -88,6 +88,29 @@ class Launchers(unittest.TestCase):
         self.assertEqual(status[0]["state"], "own")
         self.assertEqual(self.read(), "[Desktop Entry]\nExec=/x/my-edge\n")
 
+    def test_web_app_launchers_are_edited_in_place_and_restored(self):
+        os.makedirs(os.path.dirname(self.mine))
+        pwa = os.path.join(os.path.dirname(self.mine), "msedge-abc-Default.desktop")
+        wrapper = os.path.join(os.path.dirname(self.exe), "microsoft-edge")
+        original = ("[Desktop Entry]\nName=Outlook (PWA)\nExec=%s --profile-directory=Default --app-id=abc %%U\n\n"
+                    "[Desktop Action Compose]\nExec=%s --app-id=abc --app-launch-url-for-shortcuts-menu-item=x\n") % (wrapper, wrapper)
+        with open(pwa, "w") as f:
+            f.write(original)
+        os.chmod(pwa, 0o600)
+        status = L.sync({self.exe}, 47100)
+        self.assertIn({"exe": self.exe, "name": "msedge", "file": pwa, "state": "managed"}, status)
+        with open(pwa) as f:
+            text = f.read()
+        self.assertIn(L.EDITED, text)
+        self.assertEqual(text.count("--proxy-server=socks5://127.0.0.1:47100 --"), 2)
+        self.assertEqual(os.stat(pwa).st_mode & 0o777, 0o600)
+        L.sync({self.exe}, 47101)                  # a new port replaces the old flag
+        with open(pwa) as f:
+            self.assertEqual(f.read().count("--proxy-server"), 2)
+        L.sync(set(), 47100)                       # unrouted: back as the browser wrote it, not deleted
+        with open(pwa) as f:
+            self.assertEqual(f.read(), original)
+
     def test_quoted_program(self):
         line = 'Exec="/opt/My Browser/brave" --incognito %U'
         self.assertEqual(L.exec_binary(line), "/opt/My Browser/brave")

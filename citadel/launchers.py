@@ -21,7 +21,9 @@ from .platform import write_atomic
 
 BROWSER_RE = re.compile(r"(^|/)(msedge|chrome|chromium|chromium-browser|brave|vivaldi-bin|opera)$")
 MARK = "X-Citadel-Managed=true"
+EDITED = "X-Citadel-Edited=true"       # a browser's own web-app launcher, edited in place
 FLAG = "--proxy-server=socks5://127.0.0.1:%d"
+FLAG_RE = re.compile(r" --proxy-server=socks5://127\.0\.0\.1:\d+")
 
 
 def data_dirs():
@@ -88,23 +90,54 @@ def launchers_for(exe):
     return found
 
 
-def managed_text(text, port):
+def managed_text(text, port, mark=MARK):
     """The launcher with every Exec= line starting through the front door, marked as Citadel's."""
     out, marked = [], False
-    for line in text.splitlines():
+    for line in plain_text(text).splitlines():
         if line.startswith("Exec="):
             line = with_flag(line, FLAG % port)
         out.append(line)
         if line.strip() == "[Desktop Entry]" and not marked:
-            out.append(MARK)
+            out.append(mark)
             marked = True
     return "\n".join(out) + "\n"
 
 
-def _is_managed(path):
+def plain_text(text):
+    """An edited launcher as the browser wrote it."""
+    lines = [FLAG_RE.sub("", l) if l.startswith("Exec=") else l for l in text.splitlines() if l.strip() != EDITED]
+    return "\n".join(lines) + "\n"
+
+
+def web_apps_for(exe, udir):
+    """Web-app (PWA) launchers the browser put in the user's applications folder.
+    They start the browser itself, so without the option a whole session would
+    skip the front door. -> [(path, text)]"""
+    want = os.path.dirname(os.path.realpath(exe))
+    found = []
+    try:
+        names = sorted(os.listdir(udir))
+    except OSError:
+        return found
+    for name in names:
+        path = os.path.join(udir, name)
+        if not name.endswith(".desktop"):
+            continue
+        try:
+            with open(path, encoding="utf-8") as f:
+                text = f.read()
+        except (OSError, UnicodeDecodeError):
+            continue
+        execs = [l for l in text.splitlines() if l.startswith("Exec=")]
+        if MARK not in text and any("--app-id=" in l for l in execs) and _program_dir(exec_binary(execs[0])) == want:
+            found.append((path, text))
+    return found
+
+
+def _is_managed(path, mark=MARK):
     try:
         with open(path, encoding="utf-8") as f:
-            return MARK in f.read()
+            return mark in f.read()
     except (OSError, UnicodeDecodeError):
         return False
 
@@ -113,7 +146,7 @@ def sync(exes, port):
     """Make the launchers of these browsers start through 127.0.0.1:port (0 or no
     exes: none do). -> [{"exe", "name", "file", "state": "managed"|"own"|"none"}]."""
     udir = user_dir()
-    wanted, status = {}, []
+    wanted, edited, status = {}, {}, []
     for exe in sorted(e for e in exes if is_browser(e)) if port else []:
         found = launchers_for(exe)
         if not found:
@@ -124,23 +157,39 @@ def sync(exes, port):
             if not own:
                 wanted[dst] = managed_text(text, port)
             status.append({"exe": exe, "name": os.path.basename(exe), "file": dst, "state": "own" if own else "managed"})
-    for dst, text in wanted.items():
+        for path, text in web_apps_for(exe, udir):
+            edited[path] = managed_text(text, port, EDITED)
+            status.append({"exe": exe, "name": os.path.basename(exe), "file": path, "state": "managed"})
+    for dst, text in list(wanted.items()) + list(edited.items()):
         try:
             with open(dst, encoding="utf-8") as f:
                 if f.read() == text:
                     continue
         except (OSError, UnicodeDecodeError):
             pass
-        write_atomic(dst, text, 0o644)
+        _write(dst, text)
     try:
         names = os.listdir(udir)
     except OSError:
         names = []
     for name in names:
         path = os.path.join(udir, name)
-        if name.endswith(".desktop") and path not in wanted and _is_managed(path):
+        if not name.endswith(".desktop") or path in wanted or path in edited:
+            continue
+        if _is_managed(path):
             os.unlink(path)
+        elif _is_managed(path, EDITED):
+            with open(path, encoding="utf-8") as f:
+                _write(path, plain_text(f.read()))
     return status
+
+
+def _write(path, text):
+    try:
+        mode = os.stat(path).st_mode & 0o777    # keep the browser's own permissions
+    except OSError:
+        mode = 0o644
+    write_atomic(path, text, mode)
 
 
 def started_through(pid, port):
