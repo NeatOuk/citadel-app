@@ -53,7 +53,8 @@ Column {
           dim: true
           elide: Text.ElideRight
           font.pixelSize: Style.font.caption
-          text: px.modelData.type.toUpperCase() + " " + px.modelData.host + ":" + px.modelData.port
+          text: (px.modelData.ssh ? "SSH tunnel via " + px.modelData.ssh
+                 : px.modelData.type.toUpperCase() + " " + px.modelData.host + ":" + px.modelData.port)
                 + (px.st ? (px.st.ok ? " · " + px.st.ms + " ms" : " · down") : " · checking…")
         }
         LinkButton {

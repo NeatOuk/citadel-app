@@ -73,6 +73,30 @@ def _now():
     return time.time()
 
 
+# SSH tunnel proxies: [user@]host, no spaces and no leading "-" (it is ssh's last argument, after "--")
+SSH_JUMP = re.compile(r"^(?:[A-Za-z0-9._-]+@)?[A-Za-z0-9.:_\[\]-]+$")
+SSH_PORTS = range(47200, 47300)    # the local `ssh -D` ports (proxy listen ports are 47001-47099, the front door 47100)
+
+
+def ssh_argv(px):
+    return ["ssh", "-N", "-D", "127.0.0.1:%d" % px["port"], "-o", "BatchMode=yes", "-o", "ExitOnForwardFailure=yes",
+            "-o", "ServerAliveInterval=30", "-o", "ServerAliveCountMax=3", "--", px["ssh"]]
+
+
+def ssh_free_port(proxies):
+    used = {p.get("port") for p in proxies or [] if p.get("ssh")}
+    return next((p for p in SSH_PORTS if p not in used), 0)
+
+
+def ssh_hosts(proxies, ctx):
+    """Addresses of the SSH tunnels' jump hosts (names via the resolved-names context), kept out of routing."""
+    out = []
+    for p in proxies or []:
+        if p.get("ssh") and not p["ssh"].startswith("-"):
+            h = p["ssh"].rsplit("@", 1)[-1].strip("[]")
+            out += [h] if M.is_address_like(h) else list((ctx.get("resolved") or {}).get(M.norm_host(h)) or [])
+    return out
+
 class Paths:
     def __init__(self):
         home = os.path.expanduser("~")
@@ -141,6 +165,8 @@ class Daemon:
         self._monitor = self._proxy = None   # _proxy: the in-process proxy's loop tasks while it runs
         self._matches, self._matchId = {}, 0  # monitor "match" requests in flight: id -> future
         self._front = {}                # front-door connections: local port -> {host, port, route, ts}
+        self._ssh = {}                  # SSH tunnel proxies: proxy id -> (process, argv)
+        self._sshRetry, self._sshErr = {}, {}   # proxy id -> monotonic time of the next start / ssh's last message
         self._launcherKey, self._launcherStatus = None, []
         self._dirty = set()
         self._listeners = []            # callables(event dict)
@@ -454,6 +480,7 @@ class Daemon:
     def _is_own(self, c):
         """A connection of Citadel's own proxy (its upstream tunnels), in the daemon or the plugin's process."""
         return (c.get("app") == "Citadel proxy" or c.get("pid") == os.getpid()
+                or str(c.get("pid")) in {str(proc.pid) for proc, _ in self._ssh.values()}
                 or bool(re.search(r"/citadel-proxy(\s|$)", c.get("cmd") or "")))
 
     def _silent_source(self, c, d):
@@ -1177,6 +1204,8 @@ class Daemon:
         res = M.build_spec(self.rules, ctx, self._firewall_conns(), self.apps, self.ipCidrs, self.uid)
         res["spec"]["logNew"] = self.prefs.get("catchShort") is not False
         routes = M.compile_routes(self.rules, self.defaultRoute, self.proxies, ctx, self._firewall_conns(), self.apps, self.uid)
+        if routes:                                # an SSH tunnel's own connection never goes through a proxy
+            routes["exclude"] = M.uniq(routes["exclude"] + ssh_hosts(self.proxies, ctx))[:64]
         if routes and self.proxyCapable:
             res["spec"]["proxy"] = routes
             self.proxyError = ""
@@ -1350,12 +1379,16 @@ class Daemon:
                 self._configure_proxy()
             elif not want and self._proxy:
                 self._stop_proxy()
+            await self._sync_ssh()
             await asyncio.sleep(1)
 
     def _stop_proxy(self):
         for t in self._proxy or []:
             t.cancel()
         self._proxy = None
+        for proc, _ in self._ssh.values():          # _sync_ssh reaps them
+            if proc.returncode is None:
+                proc.kill()
         PX.check_name = PX.check_front = None
         PX.close_all()
         self._sync_launchers()
@@ -1381,6 +1414,35 @@ class Daemon:
             except Exception as e:
                 log.warning("proxy config failed: %s", e)
         asyncio.get_running_loop().create_task(apply())
+
+    async def _sync_ssh(self):
+        """Keep one `ssh -N -D` per SSH tunnel proxy while the proxy runs; restart a dead one after 10 s.
+        Key login only (BatchMode): a password or an unknown host key fails, and ssh's message shows as the error."""
+        want = {x["id"]: ssh_argv(x) for x in self.proxies if x.get("ssh")} if self._proxy else {}
+        for pid, (proc, argv) in list(self._ssh.items()):
+            if want.get(pid) != argv and proc.returncode is None:
+                proc.kill()
+                await proc.wait()
+            if proc.returncode is not None:
+                del self._ssh[pid]
+                # shortcut: stderr is only read after exit; ssh -N without -v writes a line or two
+                err = (await proc.stderr.read()).decode(errors="replace").strip().splitlines()
+                if want.get(pid) == argv:            # died by itself
+                    self._sshErr[pid] = (err[-1] if err else "ssh exited (%s)" % proc.returncode)[:200]
+                    self._sshRetry[pid] = time.monotonic() + 10
+                    log.warning("ssh tunnel %s: %s", pid, self._sshErr[pid])
+        for pid, argv in want.items():
+            if pid not in self._ssh and time.monotonic() >= self._sshRetry.get(pid, 0):
+                try:
+                    proc = await asyncio.create_subprocess_exec(*argv, stdin=asyncio.subprocess.DEVNULL,
+                                                                stdout=asyncio.subprocess.DEVNULL,
+                                                                stderr=asyncio.subprocess.PIPE)
+                except OSError as e:
+                    self._sshErr[pid] = "cannot start ssh: %s" % e
+                    self._sshRetry[pid] = time.monotonic() + 60
+                    continue
+                self._ssh[pid] = (proc, argv)
+                self._sshErr.pop(pid, None)
 
     async def _check_proxy_name(self, lport, ip, port, name):
         """Resolve hostnames through proxy: may the app on local port lport, which
@@ -1514,8 +1576,11 @@ class Daemon:
         now = _now()
         if t in ("status", "check"):
             target = self.proxyStatus if t == "status" else self.proxyCheck
+            err = m.get("error") or ""
+            if not m.get("ok") and self._sshErr.get(m.get("id")):
+                err = "SSH: " + self._sshErr[m.get("id")]
             target = dict(target, **{m.get("id"): {"ok": bool(m.get("ok")), "ms": m.get("ms") or 0,
-                                                   "error": m.get("error") or "", "ts": now}})
+                                                   "error": err, "ts": now}})
             if t == "status":
                 self.proxyStatus = target
             else:
@@ -1541,12 +1606,14 @@ class Daemon:
             log.warning("proxy: %s", m.get("msg"))
 
     def saveProxy(self, fields, user="", password=""):
+        old = next((x for x in self.proxies if x["id"] == fields.get("id")), None)
+        if fields.get("type") == "ssh":
+            return self._save_ssh_proxy(fields, old)
         ptype = fields.get("type") if fields.get("type") in ("http", "https", "socks5") else "http"
         port = M.norm_port(fields.get("port"))
         host = str(fields.get("host") or "").strip()
         if not host or port == "*":
             return {"error": "Enter a host and a port (1–65535)."}
-        old = next((x for x in self.proxies if x["id"] == fields.get("id")), None)
         pid = old["id"] if old else "px" + M._new_id()[:8]
         auth = False if user is None else (True if user else bool(old and old.get("auth")))
         px = {"id": pid, "name": str(fields.get("name") or host).strip(), "type": ptype, "host": host, "port": port,
@@ -1562,6 +1629,31 @@ class Daemon:
             P.store_secret(pid, px["name"], user, password or "")
         elif user is None:
             P.clear_secret(pid)
+        self._configure_proxy()
+        if self.enforce:
+            self._sync_enforcement(True)
+        return {"error": "", "id": pid}
+
+    def _save_ssh_proxy(self, fields, old):
+        """An SSH tunnel is a SOCKS5 proxy on 127.0.0.1 that _sync_ssh keeps up with `ssh -D` through a jump host,
+        so routing, fail-closed and the Proxy tab treat it like any other proxy."""
+        jump = str(fields.get("host") or "").strip()
+        if jump.startswith("-") or not SSH_JUMP.match(jump):
+            return {"error": "Enter the machine to go through as user@host (an SSH login that works with your key)."}
+        pid = old["id"] if old else "px" + M._new_id()[:8]
+        port = old["port"] if old and old.get("ssh") else ssh_free_port(self.proxies)
+        listen = old["listen"] if old else M.free_listen_port(self.proxies)
+        if not port or not listen:
+            return {"error": "Too many proxies."}
+        px = {"id": pid, "name": str(fields.get("name") or jump).strip(), "type": "socks5", "host": "127.0.0.1",
+              "port": port, "listen": listen, "auth": False, "verifyTls": True, "ssh": jump}
+        self.proxies = [px if x["id"] == pid else x for x in self.proxies] if old else self.proxies + [px]
+        self._sshRetry.pop(pid, None)
+        if old and old.get("auth"):
+            P.clear_secret(pid)
+        self.changed("proxies")
+        self.save()
+        self._send_config()
         self._configure_proxy()
         if self.enforce:
             self._sync_enforcement(True)

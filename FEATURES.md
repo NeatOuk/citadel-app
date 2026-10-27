@@ -189,6 +189,10 @@ On macOS the levels come from code signing and notarization: Apple, App Store, n
 Like Proxifier: chosen apps go through a proxy, everything else goes direct.
 
 - **Proxies:** HTTP, HTTPS (CONNECT over TLS) and SOCKS5, with an optional username and password kept in your keyring. **Check** tests one end to end.
+- **SSH tunnels:** for a site that only lets in one machine you can SSH into (an office server). Choose **SSH** and enter `user@host`; Citadel keeps `ssh -N -D` running through that machine (restarted 10 s after it drops) and uses it as a local SOCKS5 proxy, so the routed apps' traffic, downloads included, leaves from that machine's address. Route the site to it with **Allow via proxy** like any proxy; your normal browser then works, no separate window or profile.
+  - Key login only (`BatchMode`): a password login or an unknown host key fails, and ssh's message shows as the proxy's error. Log in once with `ssh user@host` in a terminal to accept the host key.
+  - Its own connection to that machine is Citadel's: never at the gate, never routed.
+  - Uses the system `ssh` and the local ports 47200–47299.
 - **Routes:**
   - **Allow via proxy** on a policy sends that traffic through a proxy.
   - **Everything else** sets the default route.
