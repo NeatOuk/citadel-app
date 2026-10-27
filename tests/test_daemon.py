@@ -328,6 +328,56 @@ class DaemonTest(unittest.IsolatedAsyncioTestCase):
         await self.c.call("removeProxy", pid)
         self.assertTrue(await self.c.wait_for(lambda s: not self.d._proxy, timeout=5))
 
+    async def fake_ssh(self, body):
+        """An `ssh` first on PATH for this test: body is its shell script."""
+        d = tempfile.mkdtemp()
+        with open(os.path.join(d, "ssh"), "w") as f:
+            f.write("#!/bin/sh\n" + body + "\n")
+        os.chmod(os.path.join(d, "ssh"), 0o755)
+        old = os.environ["PATH"]
+        os.environ["PATH"] = d + os.pathsep + old
+        self.addCleanup(lambda: os.environ.__setitem__("PATH", old))
+
+    async def test_ssh_tunnel_proxy_is_a_local_socks5_kept_up_by_ssh(self):
+        from citadel.daemon import ssh_argv
+        await self.fake_ssh("exec sleep 30")
+        self.d.prefs["notify"] = False
+        self.feed(tick([]))
+        bad = await self.c.call("saveProxy", {"name": "x", "type": "ssh", "host": "-oProxyCommand=sh"}, "", "")
+        self.assertIn("user@host", bad["result"]["error"])
+        bad = await self.c.call("saveProxy", {"name": "x", "type": "ssh", "host": "me@a b"}, "", "")
+        self.assertIn("user@host", bad["result"]["error"])
+        r = await self.c.call("saveProxy", {"name": "Office", "type": "ssh", "host": "me@192.0.2.10", "port": ""}, "", "")
+        pid = r["result"]["id"]
+        px = next(x for x in self.d.proxies if x["id"] == pid)
+        self.assertEqual((px["type"], px["host"], px["port"], px["ssh"], px["auth"]), ("socks5", "127.0.0.1", 47200, "me@192.0.2.10", False))
+        self.assertEqual(ssh_argv(px)[-2:], ["--", "me@192.0.2.10"])
+        self.assertIn("BatchMode=yes", ssh_argv(px))
+        self.assertTrue(await self.c.wait_for(lambda s: pid in self.d._ssh, timeout=5))
+        proc = self.d._ssh[pid][0]
+        # the tunnel's own connection to the jump host is Citadel's: no gate
+        self.feed(tick([conn("k7", "/usr/bin/ssh", "192.0.2.10", 22, app="ssh", pid=proc.pid, cmd="ssh -N -D")], ts=1004))
+        self.assertTrue(await self.c.wait_for(lambda s: "k7" in s.get("decisions", {})))
+        self.assertEqual(self.c.state["decisions"]["k7"]["source"], "citadel")
+        await self.c.call("removeProxy", pid)
+        self.assertTrue(await self.c.wait_for(lambda s: pid not in self.d._ssh, timeout=5))
+        await proc.wait()
+
+    async def test_ssh_tunnel_failure_is_reported(self):
+        await self.fake_ssh("echo 'Permission denied (publickey).' >&2; exit 255")
+        self.feed(tick([]))
+        r = await self.c.call("saveProxy", {"name": "Office", "type": "ssh", "host": "me@192.0.2.10"}, "", "")
+        pid = r["result"]["id"]
+        self.assertTrue(await self.c.wait_for(lambda s: self.d._sshErr.get(pid), timeout=5))
+        self.assertEqual(self.d._sshErr[pid], "Permission denied (publickey).")
+        self.d._on_proxy_line({"type": "status", "id": pid, "ok": False, "ms": 0, "error": "connection refused"})
+        self.assertEqual(self.d.proxyStatus[pid]["error"], "SSH: Permission denied (publickey).")
+
+    async def test_ssh_jump_hosts_stay_out_of_routing(self):
+        from citadel.daemon import ssh_hosts
+        pxs = [{"ssh": "me@192.0.2.10"}, {"ssh": "jump.example"}, {"host": "198.51.100.1"}]
+        self.assertEqual(ssh_hosts(pxs, {"resolved": {"jump.example": ["192.0.2.11"]}}), ["192.0.2.10", "192.0.2.11"])
+
     async def test_daemon_proxy_tunnels_never_wait_at_the_gate(self):
         self.d.prefs["notify"] = False
         self.feed(tick([]))

@@ -185,7 +185,7 @@ Column {
             dim: true
             font.pixelSize: Style.font.caption
             elide: Text.ElideRight
-            text: modelData.type.toUpperCase() + " " + modelData.host + ":" + modelData.port
+            text: (modelData.ssh ? "SSH tunnel via " + modelData.ssh : modelData.type.toUpperCase() + " " + modelData.host + ":" + modelData.port)
                   + (modelData.auth ? " · login in keyring" : "")
                   + " · " + (!parent.parent.parent.st ? "checking…"
                              : parent.parent.parent.st.ok ? "reachable, " + parent.parent.parent.st.ms + " ms"
@@ -214,8 +214,8 @@ Column {
   property bool pxVerify: true
   property string pxMessage: ""
   function editProxy(x) {
-    pxEdit = x.id; pxType = x.type; pxVerify = x.verifyTls !== false
-    pxName.text = x.name; pxHost.text = x.host; pxPort.text = String(x.port); pxUser.text = ""; pxPass.text = ""
+    pxEdit = x.id; pxType = x.ssh ? "ssh" : x.type; pxVerify = x.verifyTls !== false
+    pxName.text = x.name; pxHost.text = x.ssh || x.host; pxPort.text = x.ssh ? "" : String(x.port); pxUser.text = ""; pxPass.text = ""
     pxMessage = x.auth ? "Leave username empty to keep the saved login." : ""
   }
   function clearProxyForm() {
@@ -227,7 +227,8 @@ Column {
     spacing: Style.space(6)
     TextField { id: pxName; Layout.fillWidth: true; placeholderText: "name (e.g. Office)"; foreground: root.p.foreground }
     ButtonGroup {
-      options: [{ value: "http", label: "HTTP" }, { value: "https", label: "HTTPS" }, { value: "socks5", label: "SOCKS5" }]
+      options: [{ value: "http", label: "HTTP" }, { value: "https", label: "HTTPS" }, { value: "socks5", label: "SOCKS5" },
+                { value: "ssh", label: "SSH" }]
       value: root.pxType
       foreground: root.p.foreground
       fontFamily: root.p.fontFamily
@@ -238,11 +239,33 @@ Column {
   RowLayout {
     width: parent.width
     spacing: Style.space(6)
-    TextField { id: pxHost; Layout.fillWidth: true; placeholderText: "proxy host or IP"; foreground: root.p.foreground }
-    TextField { id: pxPort; Layout.preferredWidth: Style.space(70); placeholderText: "port"; foreground: root.p.foreground }
+    TextField {
+      id: pxHost
+      Layout.fillWidth: true
+      placeholderText: root.pxType === "ssh" ? "user@host to go through" : "proxy host or IP"
+      foreground: root.p.foreground
+    }
+    TextField {
+      id: pxPort
+      visible: root.pxType !== "ssh"
+      Layout.preferredWidth: Style.space(70)
+      placeholderText: "port"
+      foreground: root.p.foreground
+    }
+  }
+  Lbl {
+    p: root.p
+    width: parent.width
+    visible: root.pxType === "ssh"
+    dim: true
+    wrapMode: Text.WordWrap
+    maximumLineCount: 3
+    font.pixelSize: Style.font.caption
+    text: "Citadel keeps an SSH tunnel (ssh -D) open through that machine, so the sites you route here see its address. It logs in with your SSH key; a password login can't be used."
   }
   RowLayout {
     width: parent.width
+    visible: root.pxType !== "ssh"
     spacing: Style.space(6)
     TextField { id: pxUser; Layout.fillWidth: true; placeholderText: "username (optional)"; foreground: root.p.foreground }
     TextField { id: pxPass; Layout.fillWidth: true; placeholderText: "password"; password: true; foreground: root.p.foreground }
@@ -275,7 +298,7 @@ Column {
       onClicked: {
         var err = root.s.saveProxy({ id: root.pxEdit, name: pxName.text, type: root.pxType, host: pxHost.text,
                                      port: pxPort.text, verifyTls: root.pxVerify },
-                                   pxUser.text.trim(), pxPass.text)
+                                   root.pxType === "ssh" ? "" : pxUser.text.trim(), root.pxType === "ssh" ? "" : pxPass.text)
         root.pxMessage = err || (root.pxEdit ? "Proxy saved." : "Proxy added.")
         if (!err) root.clearProxyForm()
       }

@@ -43,6 +43,8 @@ the same core, as a background service with its own window and tray icon.
 - **Per-app proxy routing**, like Proxifier.
   - Send chosen apps through HTTP, HTTPS or SOCKS5 proxies; logins are kept in
     your keyring.
+  - Or through an SSH tunnel Citadel keeps open to a machine you can log in to
+    with your key, for sites that only let that machine in.
   - It fails closed: if the proxy is down, the app is blocked, never sent direct.
   - Optionally resolve hostnames through the proxy, with its own DNS.
 - **Threat feeds and imports.**
@@ -99,6 +101,7 @@ Optional:
 | `citadel-helper` 1.3+ ([repo](https://github.com/NeatOuk/citadel-helper)) | blocking and proxy routing; without it Citadel watches and asks but blocks nothing. 1.3.2+ also lets Citadel read the names apps look up (systemd-resolved) |
 | `python-maxminddb` | countries and network owners |
 | `libsecret` | proxy usernames and passwords in the keyring |
+| `openssh` (ssh client) | SSH tunnel proxies |
 | `networkmanager` or `iwd` | zones by Wi-Fi name (wired links work either way) |
 | an AI CLI: claude, codex, gemini, pi, opencode, crush, copilot or cursor-agent (or any command you set) | Explain at the gate |
 

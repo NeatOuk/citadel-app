@@ -208,7 +208,10 @@ QtObject {
   function saveProxy(fields, user, password) {
     var port = Math.round(Number(fields.port))
     var host = String(fields.host || "").trim()
-    if (!host || !(port >= 1 && port <= 65535)) return "Enter a host and a port (1–65535)."
+    if (fields.type === "ssh") {
+      if (!/^([A-Za-z0-9._-]+@)?[A-Za-z0-9.:_\[\]-]+$/.test(host) || host.charAt(0) === "-")
+        return "Enter the machine to go through as user@host (an SSH login that works with your key)."
+    } else if (!host || !(port >= 1 && port <= 65535)) return "Enter a host and a port (1–65535)."
     call("saveProxy", [fields, user === undefined ? "" : user, password || ""])
     return ""
   }
