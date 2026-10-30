@@ -193,6 +193,7 @@ Like Proxifier: chosen apps go through a proxy, everything else goes direct.
   - Key login only (`BatchMode`): a password login or an unknown host key fails, and ssh's message shows as the proxy's error. Log in once with `ssh user@host` in a terminal to accept the host key.
   - Its own connection to that machine is Citadel's: never at the gate, never routed.
   - Uses the system `ssh` and the local ports 47200–47299.
+  - **Check** asks the tunnel itself (does ssh's SOCKS port answer), not a website past it: the machine you go through often has no internet of its own.
 - **Routes:**
   - **Allow via proxy** on a policy sends that traffic through a proxy.
   - **Everything else** sets the default route.
@@ -236,7 +237,7 @@ Like Proxifier: chosen apps go through a proxy, everything else goes direct.
 ## 14. Service, window, tray and CLI
 
 - **`citadel-daemon`:** a systemd user service (a launchd agent on macOS). It watches, decides and enforces with the window closed.
-- **`citadel-app`:** the window and a tray icon (menu-bar icon on macOS).
+- **`citadel-app`:** the window and a tray icon (menu-bar icon on macOS). On Linux the tower is drawn in the theme's text colour and redrawn when the theme changes, so it shows on light and dark bars.
   - The icon shows the mode, a waiting count, and whether Citadel is enforcing.
   - Its menu switches modes.
   - Only one window runs at a time; `citadel-app --gate` opens it on the Gate tab.

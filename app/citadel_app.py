@@ -12,8 +12,8 @@ import os
 import sys
 import tempfile
 
-from PySide6.QtCore import (QByteArray, QObject, QPointF, QRectF, Qt, QTimer, QUrl, Property, Signal, Slot)
-from PySide6.QtGui import QAction, QColor, QGuiApplication, QIcon, QPainter, QPainterPath, QPen, QPixmap, QFont
+from PySide6.QtCore import (QByteArray, QEvent, QObject, QPointF, QRectF, Qt, QTimer, QUrl, Property, Signal, Slot)
+from PySide6.QtGui import QAction, QColor, QGuiApplication, QIcon, QPainter, QPainterPath, QPalette, QPen, QPixmap, QFont
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuickControls2 import QQuickStyle
@@ -105,7 +105,9 @@ def tower_icon(mode="guarded", waiting=0, dim=False, size=64):
     pm.fill(Qt.GlobalColor.transparent)
     p = QPainter(pm)
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
-    fg = QColor("#9aa0a6" if dim else "#e8eaed")
+    # the theme's text colour, so the tower shows on light and dark bars alike (dim = its disabled shade)
+    group = QPalette.ColorGroup.Disabled if dim else QPalette.ColorGroup.Active
+    fg = QGuiApplication.palette().color(group, QPalette.ColorRole.WindowText)
     s = size / 64.0
     body = QPainterPath()
     # keep with three battlements
@@ -182,6 +184,12 @@ class AppControl(QObject):
             self.tray.setContextMenu(menu)
             self.tray.activated.connect(self._activated)
             self.tray.show()
+            app.installEventFilter(self)  # redraw the tower when the theme (palette) changes
+
+    def eventFilter(self, obj, event):
+        if obj is self.app and event.type() == QEvent.Type.ApplicationPaletteChange:
+            self._refresh()
+        return False
 
     def _activated(self, reason):
         if reason in (QSystemTrayIcon.ActivationReason.Trigger, QSystemTrayIcon.ActivationReason.DoubleClick):

@@ -120,6 +120,48 @@ class HostName(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.targets, [DST])
 
 
+class SshCheck(unittest.IsolatedAsyncioTestCase):
+    """Check on an SSH tunnel tests the tunnel's SOCKS port, never a target past it (its far end may have no
+    internet)."""
+    async def asyncSetUp(self):
+        self.asked = []
+
+        async def socks(r, w):
+            self.asked.append(await r.readexactly(3))
+            w.write(b"\x05\x00")
+            await w.drain()
+            self.asked.append(await r.read(65536))  # a CONNECT would show up here
+            w.close()
+
+        async def not_socks(r, w):
+            await r.readexactly(3)
+            w.write(b"HT")
+            await w.drain()
+            w.close()
+        self.good = await asyncio.start_server(socks, "127.0.0.1", 0)
+        self.bad = await asyncio.start_server(not_socks, "127.0.0.1", 0)
+        for srv in (self.good, self.bad):
+            self.addAsyncCleanup(HostName._close, srv)
+        self.addCleanup(PX.proxies.clear)
+
+    def add(self, pid, srv, ssh=True):
+        PX.proxies[pid] = {"id": pid, "type": "socks5", "host": "127.0.0.1", "listen": 0, "ssh": ssh,
+                           "port": srv.sockets[0].getsockname()[1]}
+
+    async def test_tunnel_answering_is_ok_without_reaching_past_it(self):
+        self.add("t", self.good)
+        res = await PX.health("t", full=True)
+        self.assertTrue(res["ok"], res)
+        await asyncio.sleep(0.05)
+        self.assertEqual(self.asked, [b"\x05\x01\x00", b""])
+
+    async def test_tunnel_not_speaking_socks_fails(self):
+        self.add("t", self.bad)
+        res = await PX.health("t", full=True)
+        self.assertFalse(res["ok"])
+        self.assertIn("SOCKS", res["error"])
+
+
 class FrontDoor(unittest.IsolatedAsyncioTestCase):
     """The SOCKS5 port routed browsers are started with: they send the host name."""
 
