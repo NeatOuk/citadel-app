@@ -460,7 +460,8 @@ async def _apply_config(cfg):
             if ptype not in ("http", "https", "socks5"):
                 raise ValueError("bad type")
             entry = {"id": pid, "name": p.get("name") or pid, "type": ptype, "host": str(p["host"]),
-                     "port": int(p["port"]), "listen": int(p["listen"]), "verifyTls": p.get("verifyTls", True)}
+                     "port": int(p["port"]), "listen": int(p["listen"]), "verifyTls": p.get("verifyTls", True),
+                     "ssh": bool(p.get("ssh"))}
         except (KeyError, ValueError, TypeError):
             emit({"type": "log", "msg": "ignoring bad proxy entry"})
             continue
@@ -494,7 +495,16 @@ async def health(pid, full=False):
         return {"id": pid, "ok": False, "ms": 0, "error": "unknown proxy"}
     t0 = time.monotonic()
     try:
-        if full:
+        if full and px.get("ssh"):
+            # an SSH tunnel's far end often has no internet (it is there to reach a private network), so Check
+            # asks the tunnel itself: does ssh's SOCKS port answer the greeting
+            reader, writer = await open_proxy(px)
+            writer.write(b"\x05\x01\x00")
+            await writer.drain()
+            if await asyncio.wait_for(reader.readexactly(2), CONNECT_TIMEOUT) != b"\x05\x00":
+                writer.close()
+                raise ConnectionError("the SSH tunnel did not answer as a SOCKS proxy")
+        elif full:
             reader, writer = await tunnel(px, *CHECK_TARGET)
         else:
             reader, writer = await open_proxy(px)
